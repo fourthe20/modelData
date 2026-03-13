@@ -237,6 +237,7 @@ export default function App() {
   const [platform, setPlatform] = useState('3')
   const [usernames, setUsernames] = useState('')
   const [delay, setDelay] = useState('3')
+  const [jobName, setJobName] = useState('')
   const [activeJob, setActiveJob] = useState(null)
   const [jobData, setJobData] = useState(null)
   const [jobs, setJobs] = useState([])
@@ -252,7 +253,7 @@ export default function App() {
         const res = await fetch(`${API}/api/jobs/${activeJob}`)
         const data = await res.json()
         setJobData(data)
-        if (data.status === 'done' || data.status === 'error') {
+        if (data.status === 'done' || data.status === 'error' || data.status === 'stopped') {
           clearInterval(pollRef.current)
           fetchJobs()
         }
@@ -284,7 +285,7 @@ export default function App() {
       const res = await fetch(`${API}/api/scrape`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ platform, usernames, delay: parseFloat(delay) }),
+        body: JSON.stringify({ platform, usernames, delay: parseFloat(delay), name: jobName }),
       })
       const data = await res.json()
       if (data.job_id) {
@@ -297,6 +298,33 @@ export default function App() {
     setSubmitting(false)
   }
 
+  const handleStop = async () => {
+    if (!activeJob) return
+    try {
+      await fetch(`${API}/api/jobs/${activeJob}/stop`, { method: 'POST' })
+    } catch (e) {}
+  }
+
+  const handleResume = async (jobId) => {
+    try {
+      const res = await fetch(`${API}/api/jobs/${jobId}/resume`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ delay: parseFloat(delay) }),
+      })
+      const data = await res.json()
+      if (data.job_id) {
+        setActiveJob(data.job_id)
+        setJobData(null)
+        fetchJobs()
+      } else {
+        alert(data.error || 'Failed to resume')
+      }
+    } catch (e) {
+      alert('Failed to resume job')
+    }
+  }
+
   const download = (jobId, fmt) => {
     window.open(`${API}/api/jobs/${jobId}/download/${fmt}`, '_blank')
   }
@@ -304,6 +332,8 @@ export default function App() {
   const pct = jobData ? formatPct(jobData.done, jobData.total) : 0
   const isRunning = jobData?.status === 'running' || jobData?.status === 'queued'
   const isDone = jobData?.status === 'done'
+  const isStopped = jobData?.status === 'stopped'
+  const isError = jobData?.status === 'error'
 
   return (
     <div style={css.app}>
@@ -328,6 +358,16 @@ export default function App() {
               )}
             </div>
             <div style={css.panelBody}>
+              <label style={css.label}>Job Name <span style={{ color: 'var(--text-muted)', textTransform: 'none', letterSpacing: 0 }}>(used as filename)</span></label>
+              <input
+                type="text"
+                style={{ ...css.inputSmall, width: '100%', marginBottom: 16 }}
+                value={jobName}
+                onChange={e => setJobName(e.target.value)}
+                placeholder="e.g. SC batch 1"
+                disabled={isRunning}
+              />
+
               <label style={css.label}>Platform</label>
               <select
                 style={css.select}
@@ -382,13 +422,23 @@ export default function App() {
                 </div>
               </div>
 
-              <button
-                style={{ ...css.btnPrimary, opacity: isRunning || submitting ? 0.5 : 1 }}
-                onClick={handleSubmit}
-                disabled={isRunning || submitting}
-              >
-                {submitting ? 'STARTING...' : isRunning ? `RUNNING... ${pct}%` : '▶ RUN SCRAPE'}
-              </button>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button
+                  style={{ ...css.btnPrimary, flex: 1, opacity: isRunning || submitting ? 0.5 : 1 }}
+                  onClick={handleSubmit}
+                  disabled={isRunning || submitting}
+                >
+                  {submitting ? 'STARTING...' : isRunning ? `RUNNING... ${pct}%` : '▶ RUN SCRAPE'}
+                </button>
+                {isRunning && (
+                  <button
+                    style={{ ...css.btnSecondary, padding: '0 16px', color: 'var(--error)', borderColor: 'var(--error)' }}
+                    onClick={handleStop}
+                  >
+                    ⏹ STOP
+                  </button>
+                )}
+              </div>
             </div>
           </div>
 
@@ -412,7 +462,7 @@ export default function App() {
                     </div>
                   )) : <span style={{ color: 'var(--text-muted)' }}>Waiting for output...</span>}
                 </div>
-                {isDone && (
+                {(isDone || isStopped) && (
                   <div style={{ display: 'flex', gap: 8, paddingBottom: 2 }}>
                     <button style={css.btnAccent} onClick={() => download(activeJob, 'xlsx')}>
                       ↓ Download XLSX
@@ -420,11 +470,28 @@ export default function App() {
                     <button style={css.btnAccent} onClick={() => download(activeJob, 'csv')}>
                       ↓ Download CSV
                     </button>
+                    {isStopped && (
+                      <button style={{ ...css.btnSecondary, color: 'var(--warn)', borderColor: 'var(--warn)' }} onClick={() => handleResume(activeJob)}>
+                        ↩ Resume
+                      </button>
+                    )}
                   </div>
                 )}
-                {jobData.status === 'error' && (
-                  <div style={{ color: 'var(--error)', fontFamily: 'var(--mono)', fontSize: 11, paddingBottom: 4 }}>
-                    Error: {jobData.error}
+                {isError && (
+                  <div style={{ paddingBottom: 4 }}>
+                    <div style={{ color: 'var(--error)', fontFamily: 'var(--mono)', fontSize: 11, marginBottom: 8 }}>
+                      Error: {jobData.error}
+                    </div>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      {jobData.done > 0 && (
+                        <button style={css.btnAccent} onClick={() => download(activeJob, 'xlsx')}>
+                          ↓ Partial XLSX
+                        </button>
+                      )}
+                      <button style={{ ...css.btnSecondary, color: 'var(--warn)', borderColor: 'var(--warn)' }} onClick={() => handleResume(activeJob)}>
+                        ↩ Resume from crash
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
@@ -450,30 +517,40 @@ export default function App() {
                   <div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
                       <span style={css.statusDot(job.status)} />
-                      <span style={{ fontFamily: 'var(--mono)', fontSize: 12 }}>{job.platform}</span>
-                      <span style={css.tag(job.status === 'done' ? 'green' : job.status === 'running' ? 'orange' : job.status === 'error' ? 'red' : 'grey')}>
+                      <span style={{ fontFamily: 'var(--mono)', fontSize: 12 }}>
+                        {job.name || job.platform}
+                      </span>
+                      <span style={css.tag(job.status === 'done' ? 'green' : job.status === 'running' ? 'orange' : job.status === 'error' || job.status === 'stopped' ? 'red' : 'grey')}>
                         {job.status}
                       </span>
                     </div>
                     <div style={{ color: 'var(--text-muted)', fontFamily: 'var(--mono)', fontSize: 10 }}>
-                      {job.done}/{job.total} models
+                      {job.name ? `${job.platform} · ` : ''}{job.done}/{job.total} models
+                      {job.resumed_from && <span style={{ marginLeft: 6, color: 'var(--warn)' }}>↩ resumed</span>}
                     </div>
                   </div>
-                  {job.status === 'done' && (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                      <button style={{ ...css.btnAccent, fontSize: 10, padding: '4px 10px' }} onClick={() => download(job.id, 'xlsx')}>
-                        XLSX
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    {(job.status === 'done' || job.status === 'stopped') && (
+                      <>
+                        <button style={{ ...css.btnAccent, fontSize: 10, padding: '4px 10px' }} onClick={() => download(job.id, 'xlsx')}>
+                          XLSX
+                        </button>
+                        <button style={{ ...css.btnAccent, fontSize: 10, padding: '4px 10px' }} onClick={() => download(job.id, 'csv')}>
+                          CSV
+                        </button>
+                      </>
+                    )}
+                    {(job.status === 'error' || job.status === 'stopped') && (
+                      <button style={{ ...css.btnSecondary, fontSize: 10, color: 'var(--warn)', borderColor: 'var(--warn)' }} onClick={() => handleResume(job.id)}>
+                        ↩ resume
                       </button>
-                      <button style={{ ...css.btnAccent, fontSize: 10, padding: '4px 10px' }} onClick={() => download(job.id, 'csv')}>
-                        CSV
+                    )}
+                    {job.status === 'running' && (
+                      <button style={{ ...css.btnSecondary, fontSize: 10 }} onClick={() => setActiveJob(job.id)}>
+                        view
                       </button>
-                    </div>
-                  )}
-                  {job.status === 'running' && (
-                    <button style={{ ...css.btnSecondary, fontSize: 10 }} onClick={() => setActiveJob(job.id)}>
-                      view
-                    </button>
-                  )}
+                    )}
+                  </div>
                 </div>
               ))}
             </div>
