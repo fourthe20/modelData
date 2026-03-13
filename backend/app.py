@@ -2,7 +2,6 @@
 Statbate Scraper — Flask Backend
 """
 
-import csv
 import datetime
 import io
 import json
@@ -358,73 +357,141 @@ def _get_tip_rows(details):
     return details or []
 
 
-def build_csv(all_data, platform):
+def _write_transposed_section(ws, title, headers, data_rows, start_row):
+    """Write a section transposed: col A = field label, cols B+ = values per entry."""
+    if not data_rows:
+        return start_row
+
+    # Section title
+    ws.cell(row=start_row, column=1, value=title).font = Font(bold=True, color="FFFFFF", size=10)
+    ws.cell(row=start_row, column=1).fill = HEADER_FILL
+    start_row += 1
+
+    for hi, header in enumerate(headers):
+        row_idx = start_row + hi
+        # Label cell
+        label_cell = ws.cell(row=row_idx, column=1, value=header)
+        label_cell.font = Font(bold=True, size=10)
+        label_cell.fill = PatternFill("solid", fgColor="D0D7E3")
+        label_cell.border = THIN
+        # Value cells
+        for ci, row_data in enumerate(data_rows):
+            val = row_data[hi] if hi < len(row_data) else ""
+            cell = ws.cell(row=row_idx, column=2 + ci, value=val)
+            cell.fill = ROW_ODD_FILL if ci % 2 == 0 else ROW_EVEN_FILL
+            cell.font = BODY_FONT
+            cell.border = THIN
+
+    return start_row + len(headers) + 1  # +1 blank gap
+
+
+def build_per_model_excel(all_data, platform):
+    """One sheet per model, all sections transposed (fields as rows, entries as columns)."""
     platform_name = PLATFORM_NAMES.get(str(platform), f"Platform {platform}")
-    fieldnames = [
-        "section", "username", "platform", "status",
-        "type", "last_online", "last_month_usd", "all_time_usd",
-        "date", "dons", "tips", "avg_usd", "total_usd",
-        "donator", "tokens", "usd", "rank",
-        "cumulative_usd", "daily_usd", "cumulative_tippers",
-    ]
-    rows = []
+    wb = Workbook()
+    wb.remove(wb.active)  # remove default sheet
+
     for entry in all_data:
         username = entry["username"]
         data = entry["data"]
-        status = data.get("status", "unknown")
         p = data.get("profile", {})
         tables = data.get("tables", {})
         charts = data.get("charts", {})
-        base = {"username": username, "platform": platform_name, "status": status}
 
-        rows.append({**base, "section": "profile",
-                     "type": p.get("type",""), "last_online": p.get("last_online",""),
-                     "last_month_usd": p.get("last_month_usd",""), "all_time_usd": p.get("all_time_usd","")})
+        # Sheet name max 31 chars, strip invalid chars
+        safe_name = username[:31].replace("/", "-").replace("\\", "-").replace("?", "").replace("*", "").replace("[", "").replace("]", "")
+        ws = wb.create_sheet(title=safe_name)
+        ws.column_dimensions["A"].width = 22
 
-        for r in (tables.get("searchIncome") or []):
-            rows.append({**base, "section": "last_30d", "date": r.get("date",""),
-                         "dons": r.get("dons",""), "tips": r.get("tips",""),
-                         "avg_usd": r.get("avg_usd",""), "total_usd": r.get("total_usd","")})
+        cur_row = 1
 
-        for r in _get_tip_rows(tables.get("incomeDetails")):
-            rows.append({**base, "section": "recent_tips", "date": r.get("date",""),
-                         "donator": r.get("don_name",""), "tokens": r.get("tokens",""), "usd": r.get("usd","")})
+        # ── Profile ──
+        cur_row = _write_transposed_section(ws, "PROFILE",
+            ["Username", "Platform", "Status", "Type", "Last Online", "Last Month USD", "All Time USD"],
+            [[username, platform_name, data.get("status",""), p.get("type",""),
+              p.get("last_online",""), p.get("last_month_usd",""), p.get("all_time_usd","")]],
+            cur_row)
 
-        for i, r in enumerate(tables.get("donsMonth") or [], 1):
-            total_usd = r.get("total_usd", 0)
-            rows.append({**base, "section": "top_monthly", "rank": i,
-                         "donator": r.get("name",""),
-                         "tokens": round(total_usd/TOKEN_COST) if total_usd else "", "usd": total_usd})
+        # ── Last 30 days ──
+        income = tables.get("searchIncome") or []
+        if income:
+            cur_row = _write_transposed_section(ws, "LAST 30 DAYS",
+                ["Date", "Dons", "Tips", "Avg USD", "Total USD"],
+                [[r.get("date",""), r.get("dons",""), r.get("tips",""),
+                  r.get("avg_usd",""), r.get("total_usd","")] for r in income],
+                cur_row)
 
-        for i, r in enumerate(tables.get("donsAll") or [], 1):
-            total_usd = r.get("total_usd", 0)
-            rows.append({**base, "section": "top_alltime", "rank": i,
-                         "donator": r.get("name",""),
-                         "tokens": round(total_usd/TOKEN_COST) if total_usd else "", "usd": total_usd})
+        # ── Recent tips ──
+        tips = _get_tip_rows(tables.get("incomeDetails"))
+        if tips:
+            cur_row = _write_transposed_section(ws, "RECENT TIPS",
+                ["Date", "Donator", "Tokens", "USD"],
+                [[r.get("date",""), r.get("don_name",""), r.get("tokens",""), r.get("usd","")] for r in tips],
+                cur_row)
 
-        for r in (tables.get("top100tips") or []):
-            rows.append({**base, "section": "biggest_tips", "date": r.get("date",""),
-                         "donator": r.get("don_name",""), "tokens": r.get("tokens",""), "usd": r.get("usd","")})
+        # ── Top monthly ──
+        mons = tables.get("donsMonth") or []
+        if mons:
+            cur_row = _write_transposed_section(ws, "TOP MONTHLY TIPPERS",
+                ["Rank", "Donator", "Tokens", "USD"],
+                [[i+1, r.get("name",""),
+                  round(r.get("total_usd",0)/TOKEN_COST) if r.get("total_usd") else "",
+                  r.get("total_usd","")] for i, r in enumerate(mons)],
+                cur_row)
 
-        for r in chart_to_rows(charts.get("earnings_cumulative",[]), "cumulative_usd"):
-            rows.append({**base, "section": "earnings_chart", "date": r["date"], "cumulative_usd": r["cumulative_usd"]})
+        # ── Top all-time ──
+        alltime = tables.get("donsAll") or []
+        if alltime:
+            cur_row = _write_transposed_section(ws, "TOP ALL-TIME TIPPERS",
+                ["Rank", "Donator", "Tokens", "USD"],
+                [[i+1, r.get("name",""),
+                  round(r.get("total_usd",0)/TOKEN_COST) if r.get("total_usd") else "",
+                  r.get("total_usd","")] for i, r in enumerate(alltime)],
+                cur_row)
 
-        for r in chart_to_rows(charts.get("daily_income",[]), "daily_usd"):
-            rows.append({**base, "section": "daily_chart", "date": r["date"], "daily_usd": r["daily_usd"]})
+        # ── Biggest tips ──
+        bigtips = tables.get("top100tips") or []
+        if bigtips:
+            cur_row = _write_transposed_section(ws, "BIGGEST TIPS",
+                ["Date", "Donator", "Tokens", "USD"],
+                [[r.get("date",""), r.get("don_name",""), r.get("tokens",""), r.get("usd","")] for r in bigtips],
+                cur_row)
 
+        # ── Earnings chart ──
+        earn = chart_to_rows(charts.get("earnings_cumulative", []), "cumulative_usd")
+        if earn:
+            cur_row = _write_transposed_section(ws, "EARNINGS CHART (CUMULATIVE)",
+                ["Date", "Cumulative USD"],
+                [[r["date"], r["cumulative_usd"]] for r in earn],
+                cur_row)
+
+        # ── Daily chart ──
+        daily = chart_to_rows(charts.get("daily_income", []), "daily_usd")
+        if daily:
+            cur_row = _write_transposed_section(ws, "DAILY INCOME CHART",
+                ["Date", "Daily USD"],
+                [[r["date"], r["daily_usd"]] for r in daily],
+                cur_row)
+
+        # ── Tippers chart ──
         seen = {}
         for pt in (charts.get("tippers_cumulative") or []):
             if len(pt) >= 2:
                 d = datetime.datetime.utcfromtimestamp(pt[0]/1000).strftime("%Y-%m-%d")
                 seen[d] = pt[1]
-        for d, c in sorted(seen.items()):
-            rows.append({**base, "section": "tippers_chart", "date": d, "cumulative_tippers": c})
+        if seen:
+            cur_row = _write_transposed_section(ws, "TIPPERS CHART (CUMULATIVE)",
+                ["Date", "Cumulative Tippers"],
+                [[d, c] for d, c in sorted(seen.items())],
+                cur_row)
 
-    buf = io.StringIO()
-    writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
-    writer.writeheader()
-    writer.writerows(rows)
-    return io.BytesIO(buf.getvalue().encode("utf-8"))
+        # Auto-width all columns
+        auto_width(ws)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
@@ -508,9 +575,9 @@ def download(job_id, fmt):
         filename = f"statbate_{platform_name}_{ts}.xlsx"
         mimetype = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     elif fmt == "csv":
-        buf = build_csv(all_data, platform)
-        filename = f"statbate_{platform_name}_{ts}.csv"
-        mimetype = "text/csv"
+        buf = build_per_model_excel(all_data, platform)
+        filename = f"statbate_{platform_name}_{ts}_per_model.xlsx"
+        mimetype = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     else:
         return jsonify({"error": "Invalid format"}), 400
 
