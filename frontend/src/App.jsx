@@ -238,6 +238,14 @@ export default function App() {
   const [usernames, setUsernames] = useState('')
   const [delay, setDelay] = useState('3')
   const [jobName, setJobName] = useState('')
+  const [sections, setSections] = useState({
+    profile: true,
+    last30d: true,
+    recent_tips: false,
+    top_monthly: false,
+    top_alltime: false,
+    biggest_tips: false,
+  })
   const [activeJob, setActiveJob] = useState(null)
   const [jobData, setJobData] = useState(null)
   const [jobs, setJobs] = useState([])
@@ -326,7 +334,8 @@ export default function App() {
   }
 
   const download = (jobId, fmt) => {
-    window.open(`${API}/api/jobs/${jobId}/download/${fmt}`, '_blank')
+    const enabled = Object.entries(sections).filter(([,v]) => v).map(([k]) => k).join(',')
+    window.open(`${API}/api/jobs/${jobId}/download/${fmt}?sections=${enabled}`, '_blank')
   }
 
   const pct = jobData ? formatPct(jobData.done, jobData.total) : 0
@@ -344,114 +353,166 @@ export default function App() {
         <p style={css.subtitle}>Model earnings intelligence — Chaturbate · Stripchat · BongaCams · CamSoda · MFC</p>
       </header>
 
-      <div style={css.grid}>
-        {/* Left: Input */}
-        <div>
-          <div style={css.panel}>
-            <div style={css.panelHeader}>
-              <span>New Scrape Job</span>
-              {jobData && (
-                <span style={{ color: isDone ? 'var(--success)' : isRunning ? 'var(--warn)' : 'var(--text-dim)' }}>
-                  <span style={css.statusDot(jobData.status)} />
-                  {jobData.status}
-                </span>
+      {/* Top row: config left, textarea right */}
+      <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr', gap: 16, alignItems: 'start', marginBottom: 16 }}>
+
+        {/* Left: config */}
+        <div style={css.panel}>
+          <div style={css.panelHeader}>
+            <span>New Scrape Job</span>
+            {jobData && (
+              <span style={{ color: isDone ? 'var(--success)' : isRunning ? 'var(--warn)' : 'var(--text-dim)' }}>
+                <span style={css.statusDot(jobData.status)} />
+                {jobData.status}
+              </span>
+            )}
+          </div>
+          <div style={css.panelBody}>
+
+            <label style={css.label}>Job Name <span style={{ color: 'var(--text-muted)', textTransform: 'none', letterSpacing: 0 }}>(filename)</span></label>
+            <input
+              type="text"
+              style={{ ...css.inputSmall, width: '100%', marginBottom: 16 }}
+              value={jobName}
+              onChange={e => setJobName(e.target.value)}
+              placeholder="e.g. SC batch 1"
+              disabled={isRunning}
+            />
+
+            <label style={css.label}>Platform</label>
+            <select
+              style={css.select}
+              value={platform}
+              onChange={e => setPlatform(e.target.value)}
+              disabled={isRunning}
+            >
+              {PLATFORMS.map(p => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </select>
+
+            {/* Output field toggles */}
+            <label style={{ ...css.label, marginBottom: 6 }}>Output Fields</label>
+            <div style={{ marginBottom: 16 }}>
+              {[
+                { key: 'profile',      label: 'Profile summary' },
+                { key: 'last30d',      label: 'Last 30 days' },
+                { key: 'recent_tips',  label: 'Recent tips' },
+                { key: 'top_monthly',  label: 'Top monthly tippers' },
+                { key: 'top_alltime',  label: 'Top all-time tippers' },
+                { key: 'biggest_tips', label: 'Biggest tips' },
+              ].map(({ key, label }) => (
+                <div
+                  key={key}
+                  onClick={() => setSections(s => ({ ...s, [key]: !s[key] }))}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 8,
+                    padding: '5px 0', cursor: 'pointer', userSelect: 'none',
+                  }}
+                >
+                  <div style={{
+                    width: 13, height: 13, flexShrink: 0,
+                    border: `1px solid ${sections[key] ? 'var(--accent)' : 'var(--border)'}`,
+                    background: sections[key] ? 'var(--accent)' : 'transparent',
+                    borderRadius: 2,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  }}>
+                    {sections[key] && <span style={{ color: '#000', fontSize: 9, fontWeight: 'bold', lineHeight: 1 }}>✓</span>}
+                  </div>
+                  <span style={{ fontFamily: 'var(--mono)', fontSize: 11, color: sections[key] ? 'var(--text)' : 'var(--text-dim)' }}>
+                    {label}
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            <div style={css.row}>
+              <div style={{ flex: 1 }}>
+                <label style={css.label}>Delay (s)</label>
+                <input
+                  type="number" min="1" max="30" step="0.5"
+                  style={css.inputSmall}
+                  value={delay}
+                  onChange={e => setDelay(e.target.value)}
+                  disabled={isRunning}
+                />
+              </div>
+              <div style={{ flex: 2 }}>
+                <label style={css.label}>Est. time</label>
+                <div style={{ ...css.inputSmall, background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-dim)', fontFamily: 'var(--mono)', fontSize: 12, padding: '8px 12px' }}>
+                  {(() => {
+                    const count = usernames.split('\n').filter(l => l.trim()).length
+                    const secs = count * parseFloat(delay || 3)
+                    if (secs < 60) return `~${Math.round(secs)}s`
+                    return `~${Math.round(secs / 60)}m for ${count}`
+                  })()}
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button
+                style={{ ...css.btnPrimary, flex: 1, opacity: isRunning || submitting ? 0.5 : 1 }}
+                onClick={handleSubmit}
+                disabled={isRunning || submitting}
+              >
+                {submitting ? 'STARTING...' : isRunning ? `RUNNING... ${pct}%` : '▶ RUN SCRAPE'}
+              </button>
+              {isRunning && (
+                <button
+                  style={{ ...css.btnSecondary, padding: '0 14px', color: 'var(--error)', borderColor: 'var(--error)' }}
+                  onClick={handleStop}
+                >
+                  ⏹
+                </button>
               )}
             </div>
-            <div style={css.panelBody}>
-              <label style={css.label}>Job Name <span style={{ color: 'var(--text-muted)', textTransform: 'none', letterSpacing: 0 }}>(used as filename)</span></label>
-              <input
-                type="text"
-                style={{ ...css.inputSmall, width: '100%', marginBottom: 16 }}
-                value={jobName}
-                onChange={e => setJobName(e.target.value)}
-                placeholder="e.g. SC batch 1"
-                disabled={isRunning}
-              />
-
-              <label style={css.label}>Platform</label>
-              <select
-                style={css.select}
-                value={platform}
-                onChange={e => setPlatform(e.target.value)}
-                disabled={isRunning}
-              >
-                {PLATFORMS.map(p => (
-                  <option key={p.id} value={p.id}>{p.name}</option>
-                ))}
-              </select>
-
-              <label style={css.label}>Usernames <span style={{ color: 'var(--text-muted)', textTransform: 'none', letterSpacing: 0 }}>(one per line)</span></label>
-              <textarea
-                style={{
-                  ...css.textarea,
-                  borderColor: isRunning ? 'var(--border)' : undefined,
-                  opacity: isRunning ? 0.6 : 1,
-                }}
-                value={usernames}
-                onChange={e => setUsernames(e.target.value)}
-                placeholder={"cm---001\nyoyo__\nsomemodel\n..."}
-                disabled={isRunning}
-              />
-
-              <div style={css.row}>
-                <div style={{ flex: 1 }}>
-                  <label style={css.label}>Delay (sec)</label>
-                  <input
-                    type="number"
-                    min="1"
-                    max="30"
-                    step="0.5"
-                    style={css.inputSmall}
-                    value={delay}
-                    onChange={e => setDelay(e.target.value)}
-                    disabled={isRunning}
-                  />
-                </div>
-                <div style={{ flex: 2 }}>
-                  <label style={css.label}>
-                    Estimated time
-                  </label>
-                  <div style={{ ...css.inputSmall, background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-dim)', fontFamily: 'var(--mono)', fontSize: 12, padding: '8px 12px' }}>
-                    {(() => {
-                      const count = usernames.split('\n').filter(l => l.trim()).length
-                      const secs = count * parseFloat(delay || 3)
-                      if (secs < 60) return `~${Math.round(secs)}s`
-                      return `~${Math.round(secs / 60)}m for ${count} models`
-                    })()}
-                  </div>
-                </div>
-              </div>
-
-              <div style={{ display: 'flex', gap: 8 }}>
-                <button
-                  style={{ ...css.btnPrimary, flex: 1, opacity: isRunning || submitting ? 0.5 : 1 }}
-                  onClick={handleSubmit}
-                  disabled={isRunning || submitting}
-                >
-                  {submitting ? 'STARTING...' : isRunning ? `RUNNING... ${pct}%` : '▶ RUN SCRAPE'}
-                </button>
-                {isRunning && (
-                  <button
-                    style={{ ...css.btnSecondary, padding: '0 16px', color: 'var(--error)', borderColor: 'var(--error)' }}
-                    onClick={handleStop}
-                  >
-                    ⏹ STOP
-                  </button>
-                )}
-              </div>
-            </div>
           </div>
+        </div>
 
-          {/* Progress + log */}
-          {jobData && (
-            <div style={{ ...css.panel, marginTop: 16 }}>
-              <div style={css.panelHeader}>
-                <span>Progress</span>
-                <span style={{ fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--text-dim)' }}>
-                  {jobData.done}/{jobData.total}
-                </span>
-              </div>
-              <div style={{ padding: '14px 16px 4px' }}>
+        {/* Right: username textarea */}
+        <div style={{ ...css.panel, display: 'flex', flexDirection: 'column' }}>
+          <div style={css.panelHeader}>
+            <span>Usernames</span>
+            <span style={{ fontFamily: 'var(--mono)', fontSize: 10, color: 'var(--text-muted)' }}>
+              {usernames.split('\n').filter(l => l.trim()).length} models
+            </span>
+          </div>
+          <div style={{ padding: 16, flex: 1, display: 'flex', flexDirection: 'column' }}>
+            <textarea
+              style={{
+                ...css.textarea,
+                flex: 1,
+                minHeight: 380,
+                marginBottom: 0,
+                opacity: isRunning ? 0.6 : 1,
+                resize: 'none',
+              }}
+              value={usernames}
+              onChange={e => setUsernames(e.target.value)}
+              placeholder={'cm---001\nyoyo__\nsomemodel\n...'}
+              disabled={isRunning}
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* Bottom row: progress left, job history right */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, alignItems: 'start' }}>
+
+        {/* Progress / active job */}
+        <div style={css.panel}>
+          <div style={css.panelHeader}>
+            <span>Progress</span>
+            {jobData && (
+              <span style={{ fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--text-dim)' }}>
+                {jobData.done}/{jobData.total}
+              </span>
+            )}
+          </div>
+          <div style={{ padding: '14px 16px 12px' }}>
+            {jobData ? (
+              <>
                 <div style={css.progressBar(pct)}>
                   <div style={css.progressFill(pct)} />
                 </div>
@@ -463,13 +524,9 @@ export default function App() {
                   )) : <span style={{ color: 'var(--text-muted)' }}>Waiting for output...</span>}
                 </div>
                 {(isDone || isStopped) && (
-                  <div style={{ display: 'flex', gap: 8, paddingBottom: 2 }}>
-                    <button style={css.btnAccent} onClick={() => download(activeJob, 'xlsx')}>
-                      ↓ Download XLSX
-                    </button>
-                    <button style={css.btnAccent} onClick={() => download(activeJob, 'csv')}>
-                      ↓ Download CSV
-                    </button>
+                  <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+                    <button style={css.btnAccent} onClick={() => download(activeJob, 'xlsx')}>↓ XLSX</button>
+                    <button style={css.btnAccent} onClick={() => download(activeJob, 'csv')}>↓ CSV</button>
                     {isStopped && (
                       <button style={{ ...css.btnSecondary, color: 'var(--warn)', borderColor: 'var(--warn)' }} onClick={() => handleResume(activeJob)}>
                         ↩ Resume
@@ -478,120 +535,84 @@ export default function App() {
                   </div>
                 )}
                 {isStopped && jobData.remaining?.length > 0 && (
-                  <div style={{ marginTop: 8, marginBottom: 4 }}>
-                    <button
-                      style={{ ...css.btnSecondary, fontSize: 10, width: '100%' }}
-                      onClick={() => {
-                        navigator.clipboard.writeText(jobData.remaining.join('\n'))
-                          .then(() => alert(`Copied ${jobData.remaining.length} remaining usernames to clipboard`))
-                      }}
-                    >
-                      📋 Copy {jobData.remaining.length} remaining usernames
-                    </button>
-                  </div>
+                  <button style={{ ...css.btnSecondary, fontSize: 10, width: '100%', marginBottom: 4 }}
+                    onClick={() => navigator.clipboard.writeText(jobData.remaining.join('\n')).then(() => alert(`Copied ${jobData.remaining.length} remaining`))}>
+                    📋 Copy {jobData.remaining.length} remaining usernames
+                  </button>
                 )}
                 {isError && (
-                  <div style={{ paddingBottom: 4 }}>
+                  <div>
                     <div style={{ color: 'var(--error)', fontFamily: 'var(--mono)', fontSize: 11, marginBottom: 8 }}>
                       Error: {jobData.error}
                     </div>
                     <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
-                      {jobData.done > 0 && (
-                        <button style={css.btnAccent} onClick={() => download(activeJob, 'xlsx')}>
-                          ↓ Partial XLSX
-                        </button>
-                      )}
+                      {jobData.done > 0 && <button style={css.btnAccent} onClick={() => download(activeJob, 'xlsx')}>↓ Partial XLSX</button>}
                       <button style={{ ...css.btnSecondary, color: 'var(--warn)', borderColor: 'var(--warn)' }} onClick={() => handleResume(activeJob)}>
                         ↩ Resume from crash
                       </button>
                     </div>
                     {jobData.remaining?.length > 0 && (
-                      <button
-                        style={{ ...css.btnSecondary, fontSize: 10, width: '100%' }}
-                        onClick={() => {
-                          navigator.clipboard.writeText(jobData.remaining.join('\n'))
-                            .then(() => alert(`Copied ${jobData.remaining.length} remaining usernames to clipboard`))
-                        }}
-                      >
+                      <button style={{ ...css.btnSecondary, fontSize: 10, width: '100%' }}
+                        onClick={() => navigator.clipboard.writeText(jobData.remaining.join('\n')).then(() => alert(`Copied ${jobData.remaining.length} remaining`))}>
                         📋 Copy {jobData.remaining.length} remaining usernames
                       </button>
                     )}
                   </div>
                 )}
+              </>
+            ) : (
+              <div style={{ color: 'var(--text-muted)', fontFamily: 'var(--mono)', fontSize: 11, padding: '20px 0', textAlign: 'center' }}>
+                No active job
               </div>
-            </div>
-          )}
+            )}
+          </div>
         </div>
 
-        {/* Right: Job history */}
-        <div>
-          <div style={css.panel}>
-            <div style={{ ...css.panelHeader }}>
-              <span>Job History</span>
-              <button style={css.btnSecondary} onClick={fetchJobs}>refresh</button>
-            </div>
-            <div style={{ padding: '0 16px' }}>
-              {jobs.length === 0 && (
-                <div style={{ padding: '20px 0', color: 'var(--text-muted)', fontFamily: 'var(--mono)', fontSize: 11, textAlign: 'center' }}>
-                  No jobs yet
-                </div>
-              )}
-              {jobs.map(job => (
-                <div key={job.id} style={css.jobRow}>
-                  <div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                      <span style={css.statusDot(job.status)} />
-                      <span style={{ fontFamily: 'var(--mono)', fontSize: 12 }}>
-                        {job.name || job.platform}
-                      </span>
-                      <span style={css.tag(job.status === 'done' ? 'green' : job.status === 'running' ? 'orange' : job.status === 'error' || job.status === 'stopped' ? 'red' : 'grey')}>
-                        {job.status}
-                      </span>
-                    </div>
-                    <div style={{ color: 'var(--text-muted)', fontFamily: 'var(--mono)', fontSize: 10 }}>
-                      {job.name ? `${job.platform} · ` : ''}{job.done}/{job.total} models
-                      {job.resumed_from && <span style={{ marginLeft: 6, color: 'var(--warn)' }}>↩ resumed</span>}
-                    </div>
-                  </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                    {(job.status === 'done' || job.status === 'stopped') && (
-                      <>
-                        <button style={{ ...css.btnAccent, fontSize: 10, padding: '4px 10px' }} onClick={() => download(job.id, 'xlsx')}>
-                          XLSX
-                        </button>
-                        <button style={{ ...css.btnAccent, fontSize: 10, padding: '4px 10px' }} onClick={() => download(job.id, 'csv')}>
-                          CSV
-                        </button>
-                      </>
-                    )}
-                    {(job.status === 'error' || job.status === 'stopped') && (
-                      <button style={{ ...css.btnSecondary, fontSize: 10, color: 'var(--warn)', borderColor: 'var(--warn)' }} onClick={() => handleResume(job.id)}>
-                        ↩ resume
-                      </button>
-                    )}
-                    {job.status === 'running' && (
-                      <button style={{ ...css.btnSecondary, fontSize: 10 }} onClick={() => setActiveJob(job.id)}>
-                        view
-                      </button>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
+        {/* Job history */}
+        <div style={css.panel}>
+          <div style={css.panelHeader}>
+            <span>Job History</span>
+            <button style={css.btnSecondary} onClick={fetchJobs}>refresh</button>
           </div>
-
-          {/* Info card */}
-          <div style={{ ...css.panel, marginTop: 16 }}>
-            <div style={css.panelHeader}>Output Fields</div>
-            <div style={{ padding: '12px 16px', fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--text-dim)', lineHeight: 2 }}>
-              <div style={{ color: 'var(--accent)', marginBottom: 4 }}>// summary sheet</div>
-              <div>Type · Last online · Last month $ · All time $</div>
-              <div style={{ color: 'var(--accent)', margin: '8px 0 4px' }}>// table sheets</div>
-              <div>Last 30d · Recent tips · Top monthly</div>
-              <div>Top all-time · Biggest tips</div>
-              <div style={{ color: 'var(--accent)', margin: '8px 0 4px' }}>// chart data</div>
-              <div>Earnings · Daily · Tippers (time series)</div>
-            </div>
+          <div style={{ padding: '0 16px' }}>
+            {jobs.length === 0 && (
+              <div style={{ padding: '20px 0', color: 'var(--text-muted)', fontFamily: 'var(--mono)', fontSize: 11, textAlign: 'center' }}>
+                No jobs yet
+              </div>
+            )}
+            {jobs.map(job => (
+              <div key={job.id} style={css.jobRow}>
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                    <span style={css.statusDot(job.status)} />
+                    <span style={{ fontFamily: 'var(--mono)', fontSize: 12 }}>{job.name || job.platform}</span>
+                    <span style={css.tag(job.status === 'done' ? 'green' : job.status === 'running' ? 'orange' : job.status === 'error' || job.status === 'stopped' ? 'red' : 'grey')}>
+                      {job.status}
+                    </span>
+                  </div>
+                  <div style={{ color: 'var(--text-muted)', fontFamily: 'var(--mono)', fontSize: 10 }}>
+                    {job.name ? `${job.platform} · ` : ''}{job.done}/{job.total} models
+                    {job.resumed_from && <span style={{ marginLeft: 6, color: 'var(--warn)' }}>↩ resumed</span>}
+                  </div>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  {(job.status === 'done' || job.status === 'stopped') && (
+                    <>
+                      <button style={{ ...css.btnAccent, fontSize: 10, padding: '4px 10px' }} onClick={() => download(job.id, 'xlsx')}>XLSX</button>
+                      <button style={{ ...css.btnAccent, fontSize: 10, padding: '4px 10px' }} onClick={() => download(job.id, 'csv')}>CSV</button>
+                    </>
+                  )}
+                  {(job.status === 'error' || job.status === 'stopped') && (
+                    <button style={{ ...css.btnSecondary, fontSize: 10, color: 'var(--warn)', borderColor: 'var(--warn)' }} onClick={() => handleResume(job.id)}>
+                      ↩ resume
+                    </button>
+                  )}
+                  {job.status === 'running' && (
+                    <button style={{ ...css.btnSecondary, fontSize: 10 }} onClick={() => setActiveJob(job.id)}>view</button>
+                  )}
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       </div>
