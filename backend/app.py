@@ -58,6 +58,11 @@ _cleanup_orphaned_jobs()
 def _job_path(job_id):
     return JOBS_DIR / f"{job_id}.json"
 
+def _results_dir(job_id):
+    d = JOBS_DIR / f"{job_id}_results"
+    d.mkdir(exist_ok=True)
+    return d
+
 def load_job(job_id):
     p = _job_path(job_id)
     if p.exists():
@@ -66,8 +71,45 @@ def load_job(job_id):
     return None
 
 def save_job(job):
+    # Save metadata only — results are stored separately per model
+    meta = {k: v for k, v in job.items() if k != "results"}
     with open(_job_path(job["id"]), "w") as f:
-        json.dump(job, f)
+        json.dump(meta, f)
+
+def append_result(job_id, username, data):
+    """Write a single model result to its own file."""
+    safe = re.sub(r'[^\w\-]', '_', username)
+    p = _results_dir(job_id) / f"{safe}.json"
+    with open(p, "w") as f:
+        json.dump({"username": username, "data": data}, f)
+
+def load_results(job_id):
+    """Load all model results from disk in order."""
+    results_dir = JOBS_DIR / f"{job_id}_results"
+    if not results_dir.exists():
+        return []
+    results = []
+    for p in sorted(results_dir.glob("*.json")):
+        try:
+            with open(p) as f:
+                results.append(json.load(f))
+        except Exception:
+            pass
+    return results
+
+def completed_usernames(job_id):
+    """Return set of usernames already scraped for a job."""
+    results_dir = JOBS_DIR / f"{job_id}_results"
+    if not results_dir.exists():
+        return set()
+    done = set()
+    for p in results_dir.glob("*.json"):
+        try:
+            with open(p) as f:
+                done.add(json.load(f)["username"])
+        except Exception:
+            pass
+    return done
 
 def list_jobs_from_disk():
     jobs_list = []
@@ -219,7 +261,6 @@ def run_scrape_job(job_id, platform, usernames, delay):
     job["status"] = "running"
     job["total"] = len(usernames)
     job["done"] = 0
-    job["results"] = []
     job["log"] = []
     # preserve usernames list for resume
     job["all_usernames"] = usernames
@@ -269,7 +310,7 @@ def run_scrape_job(job_id, platform, usernames, delay):
 
                 job["log"].append(f"[{idx}/{len(usernames)}] Scraping {username}...")
                 data = scrape_user(page, platform, username)
-                job["results"].append({"username": username, "data": data})
+                append_result(job_id, username, data)
                 job["done"] = idx
                 job["log"][-1] += f" {data.get('status', '?')}"
                 save_job(job)
@@ -292,7 +333,7 @@ def run_scrape_job(job_id, platform, usernames, delay):
 
 # ── Excel / CSV builders ───────────────────────────────────────────────────────
 
-def build_excel(all_data, platform):
+def _build_excel_workbook(all_data, platform):
     wb = Workbook()
     platform_name = PLATFORM_NAMES.get(str(platform), f"Platform {platform}")
 
@@ -394,10 +435,7 @@ def build_excel(all_data, platform):
                        if len(pt) >= 2
                    }.items())])
 
-    buf = io.BytesIO()
-    wb.save(buf)
-    buf.seek(0)
-    return buf
+    return wb
 
 
 def _get_tip_rows(details):
@@ -436,7 +474,7 @@ def _write_transposed_section(ws, title, headers, data_rows, start_row):
     return start_row + len(headers) + 1  # +1 blank gap
 
 
-def build_per_model_excel(all_data, platform):
+def _build_per_model_workbook(all_data, platform):
     """One sheet per model, all sections transposed (fields as rows, entries as columns)."""
     platform_name = PLATFORM_NAMES.get(str(platform), f"Platform {platform}")
     wb = Workbook()
@@ -539,13 +577,28 @@ def build_per_model_excel(all_data, platform):
         # Auto-width all columns
         auto_width(ws)
 
+    return wb
+
+
+def build_excel_to_file(all_data, platform, path):
+    wb = _build_excel_workbook(all_data, platform)
+    wb.save(path)
+
+def build_excel(all_data, platform):
     buf = io.BytesIO()
-    wb.save(buf)
+    _build_excel_workbook(all_data, platform).save(buf)
     buf.seek(0)
     return buf
 
+def build_per_model_excel_to_file(all_data, platform, path):
+    wb = _build_per_model_workbook(all_data, platform)
+    wb.save(path)
 
-# ── Routes ─────────────────────────────────────────────────────────────────────
+def build_per_model_excel(all_data, platform):
+    buf = io.BytesIO()
+    _build_per_model_workbook(all_data, platform).save(buf)
+    buf.seek(0)
+    return buf
 
 @app.route("/api/health")
 def health():
@@ -632,7 +685,7 @@ def resume_job(job_id):
     body = request.json or {}
     delay = float(body.get("delay", 3.0))
 
-    completed = {r["username"] for r in old_job.get("results", [])}
+    completed = completed_usernames(job_id)
     all_usernames = old_job.get("all_usernames", [])
     remaining = [u for u in all_usernames if u not in completed]
 
@@ -647,13 +700,19 @@ def resume_job(job_id):
         "status": "queued",
         "total": len(all_usernames),
         "done": len(completed),
-        "results": list(old_job.get("results", [])),
         "log": [f"  ↩ resumed from job {job_id[:8]}... ({len(completed)} done, {len(remaining)} remaining)"],
         "all_usernames": all_usernames,
         "resumed_from": job_id,
         "created_at": datetime.datetime.utcnow().isoformat(),
     }
     save_job(new_job)
+
+    # Symlink or copy old results dir so new job can access them
+    old_results = JOBS_DIR / f"{job_id}_results"
+    new_results = JOBS_DIR / f"{new_job_id}_results"
+    if old_results.exists():
+        import shutil
+        shutil.copytree(str(old_results), str(new_results))
 
     thread = threading.Thread(
         target=run_scrape_job,
@@ -670,6 +729,11 @@ def job_status(job_id):
     job = load_job(job_id)
     if not job:
         return jsonify({"error": "Job not found"}), 404
+
+    completed = completed_usernames(job_id)
+    all_usernames = job.get("all_usernames", [])
+    remaining = [u for u in all_usernames if u not in completed]
+
     return jsonify({
         "id": job["id"],
         "name": job.get("name", ""),
@@ -679,39 +743,53 @@ def job_status(job_id):
         "log": job["log"][-50:],
         "error": job.get("error"),
         "resumed_from": job.get("resumed_from"),
+        "remaining": remaining if job["status"] in ("error", "stopped") else [],
     })
 
 
 @app.route("/api/jobs/<job_id>/download/<fmt>")
 def download(job_id, fmt):
+    import tempfile, shutil
     job = load_job(job_id)
     if not job:
         return jsonify({"error": "Job not found"}), 404
     if job["status"] not in ("done", "stopped"):
         return jsonify({"error": "Job not complete"}), 400
 
-    all_data = job["results"]
+    all_data = load_results(job_id)
+    if not all_data:
+        return jsonify({"error": "No results found"}), 404
+
     platform = job["platform"]
     platform_name = PLATFORM_NAMES.get(platform, "data")
     ts = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M")
     custom_name = job.get("name", "")
     base_name = custom_name if custom_name else f"statbate_{platform_name}_{ts}"
-    # sanitize for filename
     base_name = re.sub(r'[^\w\-. ]', '_', base_name).strip()
 
-    if fmt == "xlsx":
-        buf = build_excel(all_data, platform)
-        filename = f"{base_name}.xlsx"
-        mimetype = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    elif fmt == "csv":
-        buf = build_per_model_excel(all_data, platform)
-        filename = f"{base_name}_per_model.xlsx"
-        mimetype = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    else:
-        return jsonify({"error": "Invalid format"}), 400
+    # Write to a temp file on disk instead of BytesIO to avoid RAM spike
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx", dir=JOBS_DIR)
+    tmp.close()
 
-    return send_file(buf, mimetype=mimetype,
-                     as_attachment=True, download_name=filename)
+    try:
+        if fmt == "xlsx":
+            build_excel_to_file(all_data, platform, tmp.name)
+            filename = f"{base_name}.xlsx"
+        elif fmt == "csv":
+            build_per_model_excel_to_file(all_data, platform, tmp.name)
+            filename = f"{base_name}_per_model.xlsx"
+        else:
+            return jsonify({"error": "Invalid format"}), 400
+
+        mimetype = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        return send_file(tmp.name, mimetype=mimetype,
+                         as_attachment=True, download_name=filename)
+    except Exception as e:
+        try:
+            os.unlink(tmp.name)
+        except Exception:
+            pass
+        raise e
 
 
 @app.route("/api/jobs")
