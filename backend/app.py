@@ -35,8 +35,34 @@ PLATFORM_NAMES = {
     "6": "MFC",
 }
 
-# In-memory job store
-jobs = {}
+# ── Job persistence ────────────────────────────────────────────────────────────
+
+JOBS_DIR = Path(os.environ.get("JOBS_DIR", "/tmp/statbate_jobs"))
+JOBS_DIR.mkdir(parents=True, exist_ok=True)
+
+def _job_path(job_id):
+    return JOBS_DIR / f"{job_id}.json"
+
+def load_job(job_id):
+    p = _job_path(job_id)
+    if p.exists():
+        with open(p) as f:
+            return json.load(f)
+    return None
+
+def save_job(job):
+    with open(_job_path(job["id"]), "w") as f:
+        json.dump(job, f)
+
+def list_jobs_from_disk():
+    jobs_list = []
+    for p in sorted(JOBS_DIR.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True)[:20]:
+        try:
+            with open(p) as f:
+                jobs_list.append(json.load(f))
+        except Exception:
+            pass
+    return jobs_list
 
 
 # ── Styling ────────────────────────────────────────────────────────────────────
@@ -171,12 +197,13 @@ def chart_to_rows(data, col2_name):
 # ── Job runner ─────────────────────────────────────────────────────────────────
 
 def run_scrape_job(job_id, platform, usernames, delay):
-    job = jobs[job_id]
+    job = load_job(job_id)
     job["status"] = "running"
     job["total"] = len(usernames)
     job["done"] = 0
     job["results"] = []
     job["log"] = []
+    save_job(job)
 
     try:
         with sync_playwright() as pw:
@@ -197,6 +224,7 @@ def run_scrape_job(job_id, platform, usernames, delay):
                 job["results"].append({"username": username, "data": data})
                 job["done"] = idx
                 job["log"][-1] += f" {data.get('status', '?')}"
+                save_job(job)
 
                 if idx < len(usernames):
                     time.sleep(random.uniform(delay * 0.7, delay * 1.4))
@@ -204,10 +232,12 @@ def run_scrape_job(job_id, platform, usernames, delay):
             browser.close()
 
         job["status"] = "done"
+        save_job(job)
 
     except Exception as e:
         job["status"] = "error"
         job["error"] = str(e)
+        save_job(job)
 
 
 # ── Excel / CSV builders ───────────────────────────────────────────────────────
@@ -423,7 +453,7 @@ def start_scrape():
         return jsonify({"error": "Invalid platform"}), 400
 
     job_id = str(uuid.uuid4())
-    jobs[job_id] = {
+    job = {
         "id": job_id,
         "platform": platform,
         "status": "queued",
@@ -433,6 +463,7 @@ def start_scrape():
         "log": [],
         "created_at": datetime.datetime.utcnow().isoformat(),
     }
+    save_job(job)
 
     thread = threading.Thread(
         target=run_scrape_job,
@@ -446,7 +477,7 @@ def start_scrape():
 
 @app.route("/api/jobs/<job_id>")
 def job_status(job_id):
-    job = jobs.get(job_id)
+    job = load_job(job_id)
     if not job:
         return jsonify({"error": "Job not found"}), 404
     return jsonify({
@@ -461,7 +492,7 @@ def job_status(job_id):
 
 @app.route("/api/jobs/<job_id>/download/<fmt>")
 def download(job_id, fmt):
-    job = jobs.get(job_id)
+    job = load_job(job_id)
     if not job:
         return jsonify({"error": "Job not found"}), 404
     if job["status"] != "done":
@@ -492,8 +523,8 @@ def list_jobs():
     return jsonify([
         {"id": j["id"], "status": j["status"], "platform": PLATFORM_NAMES.get(j["platform"], j["platform"]),
          "total": j["total"], "done": j["done"], "created_at": j.get("created_at")}
-        for j in reversed(list(jobs.values()))
-    ][:20])
+        for j in list_jobs_from_disk()
+    ])
 
 
 if __name__ == "__main__":
