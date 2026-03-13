@@ -71,8 +71,13 @@ def load_job(job_id):
     return None
 
 def save_job(job):
-    # Save metadata only — results are stored separately per model
-    meta = {k: v for k, v in job.items() if k != "results"}
+    # If a results folder exists for this job, strip results from JSON (stored per-file)
+    # Otherwise keep results in JSON (legacy jobs or jobs not yet started)
+    results_dir = JOBS_DIR / f"{job['id']}_results"
+    if results_dir.exists():
+        meta = {k: v for k, v in job.items() if k != "results"}
+    else:
+        meta = job
     with open(_job_path(job["id"]), "w") as f:
         json.dump(meta, f)
 
@@ -84,18 +89,22 @@ def append_result(job_id, username, data):
         json.dump({"username": username, "data": data}, f)
 
 def load_results(job_id):
-    """Load all model results from disk in order."""
+    """Load all model results from disk. Falls back to job JSON for legacy jobs."""
     results_dir = JOBS_DIR / f"{job_id}_results"
-    if not results_dir.exists():
-        return []
-    results = []
-    for p in sorted(results_dir.glob("*.json")):
-        try:
-            with open(p) as f:
-                results.append(json.load(f))
-        except Exception:
-            pass
-    return results
+    if results_dir.exists():
+        results = []
+        for p in sorted(results_dir.glob("*.json")):
+            try:
+                with open(p) as f:
+                    results.append(json.load(f))
+            except Exception:
+                pass
+        return results
+    # Legacy fallback: results were stored inside the job JSON
+    job = load_job(job_id)
+    if job and job.get("results"):
+        return job["results"]
+    return []
 
 def completed_usernames(job_id):
     """Return set of usernames already scraped for a job."""
