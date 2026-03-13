@@ -39,6 +39,22 @@ PLATFORM_NAMES = {
 JOBS_DIR = Path(os.environ.get("JOBS_DIR", "/tmp/statbate_jobs"))
 JOBS_DIR.mkdir(parents=True, exist_ok=True)
 
+def _cleanup_orphaned_jobs():
+    """On startup, mark any running/queued jobs as stopped — they were killed by a redeploy."""
+    for p in JOBS_DIR.glob("*.json"):
+        try:
+            with open(p) as f:
+                job = json.load(f)
+            if job.get("status") in ("running", "queued"):
+                job["status"] = "stopped"
+                job.setdefault("log", []).append("  ⚠ marked stopped (orphaned at startup)")
+                with open(p, "w") as f:
+                    json.dump(job, f)
+        except Exception:
+            pass
+
+_cleanup_orphaned_jobs()
+
 def _job_path(job_id):
     return JOBS_DIR / f"{job_id}.json"
 
@@ -578,6 +594,18 @@ def start_scrape():
     thread.start()
 
     return jsonify({"job_id": job_id})
+
+
+@app.route("/api/jobs/<job_id>/abandon", methods=["POST"])
+def abandon_job(job_id):
+    """Force-mark a stuck/orphaned job as stopped so it can be downloaded and resumed."""
+    job = load_job(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    job["status"] = "stopped"
+    job["log"].append("  ⚠ marked stopped (orphaned after redeploy)")
+    save_job(job)
+    return jsonify({"ok": True, "done": job["done"]})
 
 
 @app.route("/api/jobs/<job_id>/stop", methods=["POST"])
