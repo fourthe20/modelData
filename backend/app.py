@@ -195,6 +195,9 @@ def chart_to_rows(data, col2_name):
 
 # ── Job runner ─────────────────────────────────────────────────────────────────
 
+# In-memory stop signals: job_id -> threading.Event
+_stop_flags: dict = {}
+
 def run_scrape_job(job_id, platform, usernames, delay):
     job = load_job(job_id)
     job["status"] = "running"
@@ -202,22 +205,52 @@ def run_scrape_job(job_id, platform, usernames, delay):
     job["done"] = 0
     job["results"] = []
     job["log"] = []
+    # preserve usernames list for resume
+    job["all_usernames"] = usernames
     save_job(job)
+
+    stop_event = _stop_flags.setdefault(job_id, threading.Event())
+
+    RECYCLE_EVERY = 50
+
+    def make_page(pw):
+        browser = pw.chromium.launch(headless=True, args=["--disable-dev-shm-usage"])
+        ctx = browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            viewport={"width": 1280, "height": 900},
+        )
+        return browser, ctx.new_page()
 
     try:
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=True)
-            ctx = browser.new_context(
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/124.0.0.0 Safari/537.36"
-                ),
-                viewport={"width": 1280, "height": 900},
-            )
-            page = ctx.new_page()
+            browser, page = make_page(pw)
 
             for idx, username in enumerate(usernames, 1):
+                # Check stop signal
+                if stop_event.is_set():
+                    job["log"].append("  ⏹ stopped by user.")
+                    try:
+                        browser.close()
+                    except Exception:
+                        pass
+                    job["status"] = "stopped"
+                    save_job(job)
+                    return
+
+                # Recycle browser periodically to free memory
+                if idx > 1 and (idx - 1) % RECYCLE_EVERY == 0:
+                    try:
+                        browser.close()
+                    except Exception:
+                        pass
+                    job["log"].append(f"  ↻ recycling browser at model {idx}...")
+                    save_job(job)
+                    browser, page = make_page(pw)
+
                 job["log"].append(f"[{idx}/{len(usernames)}] Scraping {username}...")
                 data = scrape_user(page, platform, username)
                 job["results"].append({"username": username, "data": data})
@@ -237,6 +270,8 @@ def run_scrape_job(job_id, platform, usernames, delay):
         job["status"] = "error"
         job["error"] = str(e)
         save_job(job)
+    finally:
+        _stop_flags.pop(job_id, None)
 
 
 # ── Excel / CSV builders ───────────────────────────────────────────────────────
@@ -507,6 +542,7 @@ def start_scrape():
     platform = str(body.get("platform", "3"))
     usernames_raw = body.get("usernames", "")
     delay = float(body.get("delay", 3.0))
+    name = body.get("name", "").strip()
 
     usernames = [
         line.strip()
@@ -522,12 +558,14 @@ def start_scrape():
     job_id = str(uuid.uuid4())
     job = {
         "id": job_id,
+        "name": name,
         "platform": platform,
         "status": "queued",
         "total": len(usernames),
         "done": 0,
         "results": [],
         "log": [],
+        "all_usernames": usernames,
         "created_at": datetime.datetime.utcnow().isoformat(),
     }
     save_job(job)
@@ -542,6 +580,63 @@ def start_scrape():
     return jsonify({"job_id": job_id})
 
 
+@app.route("/api/jobs/<job_id>/stop", methods=["POST"])
+def stop_job(job_id):
+    job = load_job(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    if job["status"] not in ("running", "queued"):
+        return jsonify({"error": "Job is not running"}), 400
+    flag = _stop_flags.get(job_id)
+    if flag:
+        flag.set()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/jobs/<job_id>/resume", methods=["POST"])
+def resume_job(job_id):
+    old_job = load_job(job_id)
+    if not old_job:
+        return jsonify({"error": "Job not found"}), 404
+    if old_job["status"] not in ("error", "stopped"):
+        return jsonify({"error": "Only errored or stopped jobs can be resumed"}), 400
+
+    body = request.json or {}
+    delay = float(body.get("delay", 3.0))
+
+    completed = {r["username"] for r in old_job.get("results", [])}
+    all_usernames = old_job.get("all_usernames", [])
+    remaining = [u for u in all_usernames if u not in completed]
+
+    if not remaining:
+        return jsonify({"error": "No remaining usernames to scrape"}), 400
+
+    new_job_id = str(uuid.uuid4())
+    new_job = {
+        "id": new_job_id,
+        "name": old_job.get("name", ""),
+        "platform": old_job["platform"],
+        "status": "queued",
+        "total": len(all_usernames),
+        "done": len(completed),
+        "results": list(old_job.get("results", [])),
+        "log": [f"  ↩ resumed from job {job_id[:8]}... ({len(completed)} done, {len(remaining)} remaining)"],
+        "all_usernames": all_usernames,
+        "resumed_from": job_id,
+        "created_at": datetime.datetime.utcnow().isoformat(),
+    }
+    save_job(new_job)
+
+    thread = threading.Thread(
+        target=run_scrape_job,
+        args=(new_job_id, old_job["platform"], remaining, delay),
+        daemon=True,
+    )
+    thread.start()
+
+    return jsonify({"job_id": new_job_id})
+
+
 @app.route("/api/jobs/<job_id>")
 def job_status(job_id):
     job = load_job(job_id)
@@ -549,11 +644,13 @@ def job_status(job_id):
         return jsonify({"error": "Job not found"}), 404
     return jsonify({
         "id": job["id"],
+        "name": job.get("name", ""),
         "status": job["status"],
         "total": job["total"],
         "done": job["done"],
-        "log": job["log"][-50:],  # last 50 lines
+        "log": job["log"][-50:],
         "error": job.get("error"),
+        "resumed_from": job.get("resumed_from"),
     })
 
 
@@ -562,21 +659,25 @@ def download(job_id, fmt):
     job = load_job(job_id)
     if not job:
         return jsonify({"error": "Job not found"}), 404
-    if job["status"] != "done":
+    if job["status"] not in ("done", "stopped"):
         return jsonify({"error": "Job not complete"}), 400
 
     all_data = job["results"]
     platform = job["platform"]
     platform_name = PLATFORM_NAMES.get(platform, "data")
     ts = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M")
+    custom_name = job.get("name", "")
+    base_name = custom_name if custom_name else f"statbate_{platform_name}_{ts}"
+    # sanitize for filename
+    base_name = re.sub(r'[^\w\-. ]', '_', base_name).strip()
 
     if fmt == "xlsx":
         buf = build_excel(all_data, platform)
-        filename = f"statbate_{platform_name}_{ts}.xlsx"
+        filename = f"{base_name}.xlsx"
         mimetype = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     elif fmt == "csv":
         buf = build_per_model_excel(all_data, platform)
-        filename = f"statbate_{platform_name}_{ts}_per_model.xlsx"
+        filename = f"{base_name}_per_model.xlsx"
         mimetype = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     else:
         return jsonify({"error": "Invalid format"}), 400
@@ -588,8 +689,16 @@ def download(job_id, fmt):
 @app.route("/api/jobs")
 def list_jobs():
     return jsonify([
-        {"id": j["id"], "status": j["status"], "platform": PLATFORM_NAMES.get(j["platform"], j["platform"]),
-         "total": j["total"], "done": j["done"], "created_at": j.get("created_at")}
+        {
+            "id": j["id"],
+            "name": j.get("name", ""),
+            "status": j["status"],
+            "platform": PLATFORM_NAMES.get(j["platform"], j["platform"]),
+            "total": j["total"],
+            "done": j["done"],
+            "created_at": j.get("created_at"),
+            "resumed_from": j.get("resumed_from"),
+        }
         for j in list_jobs_from_disk()
     ])
 
