@@ -425,25 +425,6 @@ def _build_excel_workbook(all_data, platform):
                     r.get("tokens",""), f"${r.get('usd','')}"]
                    for r in (e["data"].get("tables",{}).get("top100tips") or [])])
 
-    make_sheet("Earnings (chart)",
-        ["Username", "Date", "Cumulative USD"],
-        lambda e: [[e["username"], r["date"], r["cumulative_usd"]]
-                   for r in chart_to_rows(e["data"].get("charts",{}).get("earnings_cumulative",[]), "cumulative_usd")])
-
-    make_sheet("Daily (chart)",
-        ["Username", "Date", "Daily USD"],
-        lambda e: [[e["username"], r["date"], r["daily_usd"]]
-                   for r in chart_to_rows(e["data"].get("charts",{}).get("daily_income",[]), "daily_usd")])
-
-    make_sheet("Tippers (chart)",
-        ["Username", "Date", "Cumulative Tippers"],
-        lambda e: [[e["username"], d, c]
-                   for d, c in sorted({
-                       datetime.datetime.utcfromtimestamp(pt[0]/1000).strftime("%Y-%m-%d"): pt[1]
-                       for pt in (e["data"].get("charts",{}).get("tippers_cumulative") or [])
-                       if len(pt) >= 2
-                   }.items())])
-
     return wb
 
 
@@ -553,34 +534,6 @@ def _build_per_model_workbook(all_data, platform):
             cur_row = _write_transposed_section(ws, "BIGGEST TIPS",
                 ["Date", "Donator", "Tokens", "USD"],
                 [[r.get("date",""), r.get("don_name",""), r.get("tokens",""), r.get("usd","")] for r in bigtips],
-                cur_row)
-
-        # ── Earnings chart ──
-        earn = chart_to_rows(charts.get("earnings_cumulative", []), "cumulative_usd")
-        if earn:
-            cur_row = _write_transposed_section(ws, "EARNINGS CHART (CUMULATIVE)",
-                ["Date", "Cumulative USD"],
-                [[r["date"], r["cumulative_usd"]] for r in earn],
-                cur_row)
-
-        # ── Daily chart ──
-        daily = chart_to_rows(charts.get("daily_income", []), "daily_usd")
-        if daily:
-            cur_row = _write_transposed_section(ws, "DAILY INCOME CHART",
-                ["Date", "Daily USD"],
-                [[r["date"], r["daily_usd"]] for r in daily],
-                cur_row)
-
-        # ── Tippers chart ──
-        seen = {}
-        for pt in (charts.get("tippers_cumulative") or []):
-            if len(pt) >= 2:
-                d = datetime.datetime.utcfromtimestamp(pt[0]/1000).strftime("%Y-%m-%d")
-                seen[d] = pt[1]
-        if seen:
-            cur_row = _write_transposed_section(ws, "TIPPERS CHART (CUMULATIVE)",
-                ["Date", "Cumulative Tippers"],
-                [[d, c] for d, c in sorted(seen.items())],
                 cur_row)
 
         # Auto-width all columns
