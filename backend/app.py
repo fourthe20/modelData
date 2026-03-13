@@ -342,11 +342,13 @@ def run_scrape_job(job_id, platform, usernames, delay):
 
 # ── Excel / CSV builders ───────────────────────────────────────────────────────
 
-def _build_excel_workbook(all_data, platform):
+def _build_excel_workbook(all_data, platform, sections=None):
+    ALL = {"profile","last30d","recent_tips","top_monthly","top_alltime","biggest_tips"}
+    inc = sections if sections else ALL
     wb = Workbook()
     platform_name = PLATFORM_NAMES.get(str(platform), f"Platform {platform}")
 
-    # Summary
+    # Summary (profile) — always included if profile is checked
     ws = wb.active
     ws.title = "Summary"
     headers = ["Username", "Platform", "Status", "Type", "Last Online", "Last Month $", "All Time $", "Profile URL"]
@@ -355,7 +357,7 @@ def _build_excel_workbook(all_data, platform):
     style_header(ws, 1, len(headers))
     for i, entry in enumerate(all_data, 1):
         r = i + 1
-        p = entry["data"].get("profile", {})
+        p = entry["data"].get("profile", {}) if "profile" in inc else {}
         status = entry["data"].get("status", "unknown")
         ws.cell(row=r, column=1, value=entry["username"])
         ws.cell(row=r, column=2, value=platform_name)
@@ -393,37 +395,42 @@ def _build_excel_workbook(all_data, platform):
         auto_width(s)
         s.freeze_panes = "B2"
 
-    make_sheet("Last 30d",
-        ["Username", "Date", "Dons", "Tips", "Avg USD", "Total USD"],
-        lambda e: [[e["username"], r.get("date",""), r.get("dons",""), r.get("tips",""),
-                    f"${r.get('avg_usd','')}", f"${r.get('total_usd','')}"]
-                   for r in (e["data"].get("tables",{}).get("searchIncome") or [])])
+    if "last30d" in inc:
+        make_sheet("Last 30d",
+            ["Username", "Date", "Dons", "Tips", "Avg USD", "Total USD"],
+            lambda e: [[e["username"], r.get("date",""), r.get("dons",""), r.get("tips",""),
+                        f"${r.get('avg_usd','')}", f"${r.get('total_usd','')}"]
+                       for r in (e["data"].get("tables",{}).get("searchIncome") or [])])
 
-    make_sheet("Recent tips",
-        ["Username", "Date", "Donator", "Tokens", "USD"],
-        lambda e: [[e["username"], r.get("date",""), r.get("don_name",""),
-                    r.get("tokens",""), f"${r.get('usd','')}"]
-                   for r in _get_tip_rows(e["data"].get("tables",{}).get("incomeDetails"))])
+    if "recent_tips" in inc:
+        make_sheet("Recent tips",
+            ["Username", "Date", "Donator", "Tokens", "USD"],
+            lambda e: [[e["username"], r.get("date",""), r.get("don_name",""),
+                        r.get("tokens",""), f"${r.get('usd','')}"]
+                       for r in _get_tip_rows(e["data"].get("tables",{}).get("incomeDetails"))])
 
-    make_sheet("Top monthly",
-        ["Username", "Rank", "Donator", "Tokens", "USD"],
-        lambda e: [[e["username"], i+1, r.get("name",""),
-                    round(r.get("total_usd",0)/TOKEN_COST) if r.get("total_usd") else "",
-                    f"${r.get('total_usd','')}"]
-                   for i, r in enumerate(e["data"].get("tables",{}).get("donsMonth") or [])])
+    if "top_monthly" in inc:
+        make_sheet("Top monthly",
+            ["Username", "Rank", "Donator", "Tokens", "USD"],
+            lambda e: [[e["username"], i+1, r.get("name",""),
+                        round(r.get("total_usd",0)/TOKEN_COST) if r.get("total_usd") else "",
+                        f"${r.get('total_usd','')}"]
+                       for i, r in enumerate(e["data"].get("tables",{}).get("donsMonth") or [])])
 
-    make_sheet("Top all-time",
-        ["Username", "Rank", "Donator", "Tokens", "USD"],
-        lambda e: [[e["username"], i+1, r.get("name",""),
-                    round(r.get("total_usd",0)/TOKEN_COST) if r.get("total_usd") else "",
-                    f"${r.get('total_usd','')}"]
-                   for i, r in enumerate(e["data"].get("tables",{}).get("donsAll") or [])])
+    if "top_alltime" in inc:
+        make_sheet("Top all-time",
+            ["Username", "Rank", "Donator", "Tokens", "USD"],
+            lambda e: [[e["username"], i+1, r.get("name",""),
+                        round(r.get("total_usd",0)/TOKEN_COST) if r.get("total_usd") else "",
+                        f"${r.get('total_usd','')}"]
+                       for i, r in enumerate(e["data"].get("tables",{}).get("donsAll") or [])])
 
-    make_sheet("Biggest tips",
-        ["Username", "Date", "Donator", "Tokens", "USD"],
-        lambda e: [[e["username"], r.get("date",""), r.get("don_name",""),
-                    r.get("tokens",""), f"${r.get('usd','')}"]
-                   for r in (e["data"].get("tables",{}).get("top100tips") or [])])
+    if "biggest_tips" in inc:
+        make_sheet("Biggest tips",
+            ["Username", "Date", "Donator", "Tokens", "USD"],
+            lambda e: [[e["username"], r.get("date",""), r.get("don_name",""),
+                        r.get("tokens",""), f"${r.get('usd','')}"]
+                       for r in (e["data"].get("tables",{}).get("top100tips") or [])])
 
     return wb
 
@@ -464,101 +471,99 @@ def _write_transposed_section(ws, title, headers, data_rows, start_row):
     return start_row + len(headers) + 1  # +1 blank gap
 
 
-def _build_per_model_workbook(all_data, platform):
+def _build_per_model_workbook(all_data, platform, sections=None):
     """One sheet per model, all sections transposed (fields as rows, entries as columns)."""
+    ALL = {"profile","last30d","recent_tips","top_monthly","top_alltime","biggest_tips"}
+    inc = sections if sections else ALL
     platform_name = PLATFORM_NAMES.get(str(platform), f"Platform {platform}")
     wb = Workbook()
-    wb.remove(wb.active)  # remove default sheet
+    wb.remove(wb.active)
 
     for entry in all_data:
         username = entry["username"]
         data = entry["data"]
         p = data.get("profile", {})
         tables = data.get("tables", {})
-        charts = data.get("charts", {})
 
-        # Sheet name max 31 chars, strip invalid chars
         safe_name = username[:31].replace("/", "-").replace("\\", "-").replace("?", "").replace("*", "").replace("[", "").replace("]", "")
         ws = wb.create_sheet(title=safe_name)
         ws.column_dimensions["A"].width = 22
-
         cur_row = 1
 
-        # ── Profile ──
-        cur_row = _write_transposed_section(ws, "PROFILE",
-            ["Username", "Platform", "Status", "Type", "Last Online", "Last Month USD", "All Time USD"],
-            [[username, platform_name, data.get("status",""), p.get("type",""),
-              p.get("last_online",""), p.get("last_month_usd",""), p.get("all_time_usd","")]],
-            cur_row)
-
-        # ── Last 30 days ──
-        income = tables.get("searchIncome") or []
-        if income:
-            cur_row = _write_transposed_section(ws, "LAST 30 DAYS",
-                ["Date", "Dons", "Tips", "Avg USD", "Total USD"],
-                [[r.get("date",""), r.get("dons",""), r.get("tips",""),
-                  r.get("avg_usd",""), r.get("total_usd","")] for r in income],
+        if "profile" in inc:
+            cur_row = _write_transposed_section(ws, "PROFILE",
+                ["Username", "Platform", "Status", "Type", "Last Online", "Last Month USD", "All Time USD"],
+                [[username, platform_name, data.get("status",""), p.get("type",""),
+                  p.get("last_online",""), p.get("last_month_usd",""), p.get("all_time_usd","")]],
                 cur_row)
 
-        # ── Recent tips ──
-        tips = _get_tip_rows(tables.get("incomeDetails"))
-        if tips:
-            cur_row = _write_transposed_section(ws, "RECENT TIPS",
-                ["Date", "Donator", "Tokens", "USD"],
-                [[r.get("date",""), r.get("don_name",""), r.get("tokens",""), r.get("usd","")] for r in tips],
-                cur_row)
+        if "last30d" in inc:
+            income = tables.get("searchIncome") or []
+            if income:
+                cur_row = _write_transposed_section(ws, "LAST 30 DAYS",
+                    ["Date", "Dons", "Tips", "Avg USD", "Total USD"],
+                    [[r.get("date",""), r.get("dons",""), r.get("tips",""),
+                      r.get("avg_usd",""), r.get("total_usd","")] for r in income],
+                    cur_row)
 
-        # ── Top monthly ──
-        mons = tables.get("donsMonth") or []
-        if mons:
-            cur_row = _write_transposed_section(ws, "TOP MONTHLY TIPPERS",
-                ["Rank", "Donator", "Tokens", "USD"],
-                [[i+1, r.get("name",""),
-                  round(r.get("total_usd",0)/TOKEN_COST) if r.get("total_usd") else "",
-                  r.get("total_usd","")] for i, r in enumerate(mons)],
-                cur_row)
+        if "recent_tips" in inc:
+            tips = _get_tip_rows(tables.get("incomeDetails"))
+            if tips:
+                cur_row = _write_transposed_section(ws, "RECENT TIPS",
+                    ["Date", "Donator", "Tokens", "USD"],
+                    [[r.get("date",""), r.get("don_name",""), r.get("tokens",""), r.get("usd","")] for r in tips],
+                    cur_row)
 
-        # ── Top all-time ──
-        alltime = tables.get("donsAll") or []
-        if alltime:
-            cur_row = _write_transposed_section(ws, "TOP ALL-TIME TIPPERS",
-                ["Rank", "Donator", "Tokens", "USD"],
-                [[i+1, r.get("name",""),
-                  round(r.get("total_usd",0)/TOKEN_COST) if r.get("total_usd") else "",
-                  r.get("total_usd","")] for i, r in enumerate(alltime)],
-                cur_row)
+        if "top_monthly" in inc:
+            mons = tables.get("donsMonth") or []
+            if mons:
+                cur_row = _write_transposed_section(ws, "TOP MONTHLY TIPPERS",
+                    ["Rank", "Donator", "Tokens", "USD"],
+                    [[i+1, r.get("name",""),
+                      round(r.get("total_usd",0)/TOKEN_COST) if r.get("total_usd") else "",
+                      r.get("total_usd","")] for i, r in enumerate(mons)],
+                    cur_row)
 
-        # ── Biggest tips ──
-        bigtips = tables.get("top100tips") or []
-        if bigtips:
-            cur_row = _write_transposed_section(ws, "BIGGEST TIPS",
-                ["Date", "Donator", "Tokens", "USD"],
-                [[r.get("date",""), r.get("don_name",""), r.get("tokens",""), r.get("usd","")] for r in bigtips],
-                cur_row)
+        if "top_alltime" in inc:
+            alltime = tables.get("donsAll") or []
+            if alltime:
+                cur_row = _write_transposed_section(ws, "TOP ALL-TIME TIPPERS",
+                    ["Rank", "Donator", "Tokens", "USD"],
+                    [[i+1, r.get("name",""),
+                      round(r.get("total_usd",0)/TOKEN_COST) if r.get("total_usd") else "",
+                      r.get("total_usd","")] for i, r in enumerate(alltime)],
+                    cur_row)
 
-        # Auto-width all columns
+        if "biggest_tips" in inc:
+            bigtips = tables.get("top100tips") or []
+            if bigtips:
+                cur_row = _write_transposed_section(ws, "BIGGEST TIPS",
+                    ["Date", "Donator", "Tokens", "USD"],
+                    [[r.get("date",""), r.get("don_name",""), r.get("tokens",""), r.get("usd","")] for r in bigtips],
+                    cur_row)
+
         auto_width(ws)
 
     return wb
 
 
-def build_excel_to_file(all_data, platform, path):
-    wb = _build_excel_workbook(all_data, platform)
+def build_excel_to_file(all_data, platform, path, sections=None):
+    wb = _build_excel_workbook(all_data, platform, sections)
     wb.save(path)
 
-def build_excel(all_data, platform):
+def build_excel(all_data, platform, sections=None):
     buf = io.BytesIO()
-    _build_excel_workbook(all_data, platform).save(buf)
+    _build_excel_workbook(all_data, platform, sections).save(buf)
     buf.seek(0)
     return buf
 
-def build_per_model_excel_to_file(all_data, platform, path):
-    wb = _build_per_model_workbook(all_data, platform)
+def build_per_model_excel_to_file(all_data, platform, path, sections=None):
+    wb = _build_per_model_workbook(all_data, platform, sections)
     wb.save(path)
 
-def build_per_model_excel(all_data, platform):
+def build_per_model_excel(all_data, platform, sections=None):
     buf = io.BytesIO()
-    _build_per_model_workbook(all_data, platform).save(buf)
+    _build_per_model_workbook(all_data, platform, sections).save(buf)
     buf.seek(0)
     return buf
 
@@ -711,7 +716,6 @@ def job_status(job_id):
 
 @app.route("/api/jobs/<job_id>/download/<fmt>")
 def download(job_id, fmt):
-    import tempfile, shutil
     job = load_job(job_id)
     if not job:
         return jsonify({"error": "Job not found"}), 404
@@ -729,16 +733,20 @@ def download(job_id, fmt):
     base_name = custom_name if custom_name else f"statbate_{platform_name}_{ts}"
     base_name = re.sub(r'[^\w\-. ]', '_', base_name).strip()
 
+    # Parse requested sections
+    sections_param = request.args.get("sections", "")
+    sections = set(sections_param.split(",")) if sections_param else None
+
     # Write to a temp file on disk instead of BytesIO to avoid RAM spike
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx", dir=JOBS_DIR)
     tmp.close()
 
     try:
         if fmt == "xlsx":
-            build_excel_to_file(all_data, platform, tmp.name)
+            build_excel_to_file(all_data, platform, tmp.name, sections)
             filename = f"{base_name}.xlsx"
         elif fmt == "csv":
-            build_per_model_excel_to_file(all_data, platform, tmp.name)
+            build_per_model_excel_to_file(all_data, platform, tmp.name, sections)
             filename = f"{base_name}_per_model.xlsx"
         else:
             return jsonify({"error": "Invalid format"}), 400
