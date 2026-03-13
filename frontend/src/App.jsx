@@ -477,12 +477,25 @@ export default function App() {
                     )}
                   </div>
                 )}
+                {isStopped && jobData.remaining?.length > 0 && (
+                  <div style={{ marginTop: 8, marginBottom: 4 }}>
+                    <button
+                      style={{ ...css.btnSecondary, fontSize: 10, width: '100%' }}
+                      onClick={() => {
+                        navigator.clipboard.writeText(jobData.remaining.join('\n'))
+                          .then(() => alert(`Copied ${jobData.remaining.length} remaining usernames to clipboard`))
+                      }}
+                    >
+                      📋 Copy {jobData.remaining.length} remaining usernames
+                    </button>
+                  </div>
+                )}
                 {isError && (
                   <div style={{ paddingBottom: 4 }}>
                     <div style={{ color: 'var(--error)', fontFamily: 'var(--mono)', fontSize: 11, marginBottom: 8 }}>
                       Error: {jobData.error}
                     </div>
-                    <div style={{ display: 'flex', gap: 8 }}>
+                    <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
                       {jobData.done > 0 && (
                         <button style={css.btnAccent} onClick={() => download(activeJob, 'xlsx')}>
                           ↓ Partial XLSX
@@ -492,6 +505,17 @@ export default function App() {
                         ↩ Resume from crash
                       </button>
                     </div>
+                    {jobData.remaining?.length > 0 && (
+                      <button
+                        style={{ ...css.btnSecondary, fontSize: 10, width: '100%' }}
+                        onClick={() => {
+                          navigator.clipboard.writeText(jobData.remaining.join('\n'))
+                            .then(() => alert(`Copied ${jobData.remaining.length} remaining usernames to clipboard`))
+                        }}
+                      >
+                        📋 Copy {jobData.remaining.length} remaining usernames
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
