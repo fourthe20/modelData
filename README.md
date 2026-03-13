@@ -83,10 +83,7 @@ Returns: `{ "job_id": "uuid" }`
 | ID | Platform |
 |----|----------|
 | 1 | Chaturbate |
-| 2 | BongaCams |
 | 3 | Stripchat |
-| 4 | CamSoda |
-| 6 | MFC |
 
 ---
 
