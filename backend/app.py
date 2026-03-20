@@ -251,7 +251,70 @@ def scrape_user(page, platform, username):
     return result
 
 
-def chart_to_rows(data, col2_name):
+def scrape_sc_socials(page, username):
+    """Visit Stripchat profile page and extract social links from bio."""
+    socials = {"twitter": "", "instagram": "", "onlyfans": "", "other": [], "bio": ""}
+    try:
+        url = f"https://stripchat.com/{username}"
+        page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        page.wait_for_timeout(2000)
+
+        # Try to get bio text
+        try:
+            bio_el = page.locator("[class*='about'], [class*='bio'], [class*='description']").first
+            if bio_el.count():
+                socials["bio"] = bio_el.inner_text().strip()[:500]
+        except Exception:
+            pass
+
+        # Extract all external links from the page
+        try:
+            links = page.evaluate("""
+                () => Array.from(document.querySelectorAll('a[href]'))
+                    .map(a => a.href)
+                    .filter(h => h.startsWith('http') && !h.includes('stripchat.com'))
+            """)
+            for link in links:
+                link = link.strip().rstrip('/')
+                if not link:
+                    continue
+                if 'twitter.com' in link or 'x.com' in link:
+                    if not socials["twitter"]:
+                        socials["twitter"] = link
+                elif 'instagram.com' in link:
+                    if not socials["instagram"]:
+                        socials["instagram"] = link
+                elif 'onlyfans.com' in link:
+                    if not socials["onlyfans"]:
+                        socials["onlyfans"] = link
+                elif link not in socials["other"]:
+                    socials["other"].append(link)
+        except Exception:
+            pass
+
+        # Also scan bio text for handles/links not wrapped in <a> tags
+        bio = socials["bio"]
+        if bio:
+            if not socials["twitter"]:
+                m = re.search(r'(?:twitter\.com/|x\.com/|@)([A-Za-z0-9_]{1,50})', bio)
+                if m:
+                    socials["twitter"] = f"https://twitter.com/{m.group(1)}"
+            if not socials["instagram"]:
+                m = re.search(r'(?:instagram\.com/|ig:\s*@?)([A-Za-z0-9_.]{1,50})', bio, re.IGNORECASE)
+                if m:
+                    socials["instagram"] = f"https://instagram.com/{m.group(1)}"
+            if not socials["onlyfans"]:
+                m = re.search(r'onlyfans\.com/([A-Za-z0-9_.]{1,50})', bio, re.IGNORECASE)
+                if m:
+                    socials["onlyfans"] = f"https://onlyfans.com/{m.group(1)}"
+
+        # Cap other links to 3
+        socials["other"] = socials["other"][:3]
+
+    except Exception as e:
+        socials["error"] = str(e)
+
+    return socials
     rows = []
     for point in data:
         if len(point) >= 2:
@@ -319,9 +382,19 @@ def run_scrape_job(job_id, platform, usernames, delay):
 
                 job["log"].append(f"[{idx}/{len(usernames)}] Scraping {username}...")
                 data = scrape_user(page, platform, username)
+
+                # For Stripchat, also scrape social links from the profile page
+                if platform == "3":
+                    socials = scrape_sc_socials(page, username)
+                    data["socials"] = socials
+                    has = [k for k in ("twitter","instagram","onlyfans") if socials.get(k)] + socials.get("other",[])
+                    job["log"][-1] += f" {data.get('status','?')} | socials: {len(has)} found"
+                else:
+                    data["socials"] = {}
+                    job["log"][-1] += f" {data.get('status', '?')}"
+
                 append_result(job_id, username, data)
                 job["done"] = idx
-                job["log"][-1] += f" {data.get('status', '?')}"
                 save_job(job)
 
                 if idx < len(usernames):
@@ -348,32 +421,78 @@ def _build_excel_workbook(all_data, platform, sections=None):
     wb = Workbook()
     platform_name = PLATFORM_NAMES.get(str(platform), f"Platform {platform}")
 
-    # Summary (profile) — always included if profile is checked
-    ws = wb.active
-    ws.title = "Summary"
-    headers = ["Username", "Platform", "Status", "Type", "Last Online", "Last Month $", "All Time $", "Profile URL"]
-    for c, h in enumerate(headers, 1):
-        ws.cell(row=1, column=c, value=h)
-    style_header(ws, 1, len(headers))
-    for i, entry in enumerate(all_data, 1):
-        r = i + 1
+    SOCIAL_HEADERS = ["Username", "Platform", "Status", "Type", "Last Online",
+                      "Last Month $", "All Time $", "Twitter/X", "Instagram", "OnlyFans", "Other Links", "Bio"]
+    BASE_HEADERS   = ["Username", "Platform", "Status", "Type", "Last Online", "Last Month $", "All Time $"]
+
+    NO_SOCIAL_HEADERS = ["Username", "Platform", "Status", "Type", "Last Online",
+                         "Last Month $", "All Time $", "Twitter/X (try)", "Instagram (try)", "OnlyFans (try)"]
+    BASE_HEADERS      = ["Username", "Platform", "Status", "Type", "Last Online",
+                         "Last Month $", "All Time $", "Twitter/X (try)", "Instagram (try)", "OnlyFans (try)"]
+
+    def model_row_social(entry):
         p = entry["data"].get("profile", {}) if "profile" in inc else {}
-        status = entry["data"].get("status", "unknown")
-        ws.cell(row=r, column=1, value=entry["username"])
-        ws.cell(row=r, column=2, value=platform_name)
-        ws.cell(row=r, column=3, value=status)
-        ws.cell(row=r, column=4, value=p.get("type", ""))
-        ws.cell(row=r, column=5, value=p.get("last_online", ""))
-        ws.cell(row=r, column=6, value=p.get("last_month_usd", ""))
-        ws.cell(row=r, column=7, value=p.get("all_time_usd", ""))
-        ws.cell(row=r, column=8, value=entry["data"].get("url", ""))
-        style_row(ws, r, len(headers), i % 2 == 1)
-        sc = ws.cell(row=r, column=3)
-        if status == "ok": sc.fill = OK_FILL
-        elif status == "not_found": sc.fill = MISS_FILL
-        elif "error" in status: sc.fill = ERR_FILL
-    auto_width(ws)
-    ws.freeze_panes = "A2"
+        s = entry["data"].get("socials", {})
+        return [
+            entry["username"], platform_name,
+            entry["data"].get("status", ""),
+            p.get("type", ""), p.get("last_online", ""),
+            p.get("last_month_usd", ""), p.get("all_time_usd", ""),
+            s.get("twitter", ""), s.get("instagram", ""), s.get("onlyfans", ""),
+            " | ".join(s.get("other", [])), s.get("bio", ""),
+        ]
+
+    def model_row_base(entry):
+        p = entry["data"].get("profile", {}) if "profile" in inc else {}
+        u = entry["username"]
+        return [
+            u, platform_name,
+            entry["data"].get("status", ""),
+            p.get("type", ""), p.get("last_online", ""),
+            p.get("last_month_usd", ""), p.get("all_time_usd", ""),
+            f"https://twitter.com/{u}",
+            f"https://instagram.com/{u}",
+            f"https://onlyfans.com/{u}",
+        ]
+
+    def has_socials(entry):
+        s = entry["data"].get("socials", {})
+        return bool(s.get("twitter") or s.get("instagram") or s.get("onlyfans") or s.get("other"))
+
+    def make_summary_sheet(title, headers, rows_data, status_col=2):
+        ws = wb.create_sheet(title)
+        for c, h in enumerate(headers, 1):
+            ws.cell(row=1, column=c, value=h)
+        style_header(ws, 1, len(headers))
+        for i, row in enumerate(rows_data, 1):
+            r = i + 1
+            for c, val in enumerate(row, 1):
+                ws.cell(row=r, column=c, value=val)
+            style_row(ws, r, len(headers), i % 2 == 1)
+            status = row[status_col]
+            sc = ws.cell(row=r, column=status_col + 1)
+            if status == "ok": sc.fill = OK_FILL
+            elif status == "not_found": sc.fill = MISS_FILL
+            elif "error" in str(status): sc.fill = ERR_FILL
+        auto_width(ws)
+        ws.freeze_panes = "A2"
+
+    # Split into has/no socials only for SC (platform 3)
+    if platform == "3":
+        with_socials = [e for e in all_data if has_socials(e)]
+        without_socials = [e for e in all_data if not has_socials(e)]
+        ws_first = wb.active
+        wb.remove(ws_first)
+        make_summary_sheet("Has Socials", SOCIAL_HEADERS,
+                           [model_row_social(e) for e in with_socials])
+        make_summary_sheet("No Socials", NO_SOCIAL_HEADERS,
+                           [model_row_base(e) for e in without_socials])
+    else:
+        # Non-SC platforms — single Summary sheet
+        ws_active = wb.active
+        wb.remove(ws_active)
+        make_summary_sheet("Summary", BASE_HEADERS,
+                           [model_row_base(e) for e in all_data])
 
     def make_sheet(title, headers_list, row_fn):
         s = wb.create_sheet(title)
