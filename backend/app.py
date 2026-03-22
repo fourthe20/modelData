@@ -251,64 +251,103 @@ def scrape_user(page, platform, username):
     return result
 
 
+SOCIAL_BLOCKLIST = {
+    'stripchat.com', 'google.com', 'rtalabel.org', 'epoch.com',
+    'segpay.com', 'ccbill.com', 'twitter.com/stripchat',
+    'x.com/stripchat', 'instagram.com/stripchat',
+    'facebook.com/stripchat', 'youtube.com/stripchat',
+    'support.stripchat.com', 'stripchat.fans',
+}
+
 def scrape_sc_socials(page, username):
-    """Visit Stripchat profile page and extract social links from bio."""
+    """Visit Stripchat profile page and extract social links from the model's bio."""
     socials = {"twitter": "", "instagram": "", "onlyfans": "", "other": [], "bio": ""}
     try:
         url = f"https://stripchat.com/{username}"
         page.goto(url, wait_until="domcontentloaded", timeout=30000)
         page.wait_for_timeout(2000)
 
-        # Try to get bio text
-        try:
-            bio_el = page.locator("[class*='about'], [class*='bio'], [class*='description']").first
-            if bio_el.count():
-                socials["bio"] = bio_el.inner_text().strip()[:500]
-        except Exception:
-            pass
+        # Try to get the model's bio text — scope to profile/about section only
+        bio_text = ""
+        for selector in [
+            "[class*='about-text']",
+            "[class*='bio-text']",
+            "[class*='profile-description']",
+            "[data-role='about']",
+            "[class*='user-about']",
+            "[class*='model-about']",
+        ]:
+            try:
+                el = page.locator(selector).first
+                if el.count():
+                    bio_text = el.inner_text().strip()[:500]
+                    if bio_text:
+                        break
+            except Exception:
+                pass
+        socials["bio"] = bio_text
 
-        # Extract all external links from the page
-        try:
-            links = page.evaluate("""
-                () => Array.from(document.querySelectorAll('a[href]'))
-                    .map(a => a.href)
-                    .filter(h => h.startsWith('http') && !h.includes('stripchat.com'))
-            """)
-            for link in links:
-                link = link.strip().rstrip('/')
-                if not link:
-                    continue
-                if 'twitter.com' in link or 'x.com' in link:
-                    if not socials["twitter"]:
-                        socials["twitter"] = link
-                elif 'instagram.com' in link:
-                    if not socials["instagram"]:
-                        socials["instagram"] = link
-                elif 'onlyfans.com' in link:
-                    if not socials["onlyfans"]:
-                        socials["onlyfans"] = link
-                elif link not in socials["other"]:
-                    socials["other"].append(link)
-        except Exception:
-            pass
+        # Extract links ONLY from the profile/about section, not the whole page
+        links = []
+        for selector in [
+            "[class*='about']",
+            "[class*='bio']",
+            "[class*='social']",
+            "[class*='profile-info']",
+            "[class*='user-info']",
+        ]:
+            try:
+                section_links = page.locator(selector).evaluate_all("""
+                    els => els.flatMap(el =>
+                        Array.from(el.querySelectorAll('a[href]'))
+                            .map(a => a.href)
+                    )
+                """)
+                links.extend(section_links)
+            except Exception:
+                pass
 
-        # Also scan bio text for handles/links not wrapped in <a> tags
+        # Process and categorise links
+        seen = set()
+        for link in links:
+            link = link.strip().rstrip('/')
+            if not link or not link.startswith('http'):
+                continue
+            # Skip if matches any blocklist entry
+            if any(blocked in link for blocked in SOCIAL_BLOCKLIST):
+                continue
+            if link in seen:
+                continue
+            seen.add(link)
+
+            if 'twitter.com' in link or 'x.com' in link:
+                if not socials["twitter"]:
+                    socials["twitter"] = link
+            elif 'instagram.com' in link:
+                if not socials["instagram"]:
+                    socials["instagram"] = link
+            elif 'onlyfans.com' in link:
+                if not socials["onlyfans"]:
+                    socials["onlyfans"] = link
+            elif link not in socials["other"]:
+                socials["other"].append(link)
+
+        # Also scan bio text for informal handles
         bio = socials["bio"]
         if bio:
             if not socials["twitter"]:
-                m = re.search(r'(?:twitter\.com/|x\.com/|@)([A-Za-z0-9_]{1,50})', bio)
-                if m:
+                m = re.search(r'(?:twitter\.com/|x\.com/)([A-Za-z0-9_]{1,50})', bio)
+                if m and m.group(1).lower() not in ('stripchat', 'home', 'login'):
                     socials["twitter"] = f"https://twitter.com/{m.group(1)}"
             if not socials["instagram"]:
                 m = re.search(r'(?:instagram\.com/|ig:\s*@?)([A-Za-z0-9_.]{1,50})', bio, re.IGNORECASE)
-                if m:
+                if m and m.group(1).lower() != 'stripchat':
                     socials["instagram"] = f"https://instagram.com/{m.group(1)}"
             if not socials["onlyfans"]:
                 m = re.search(r'onlyfans\.com/([A-Za-z0-9_.]{1,50})', bio, re.IGNORECASE)
                 if m:
                     socials["onlyfans"] = f"https://onlyfans.com/{m.group(1)}"
 
-        # Cap other links to 3
         socials["other"] = socials["other"][:3]
 
     except Exception as e:
