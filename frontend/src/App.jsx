@@ -313,6 +313,25 @@ export default function App() {
     } catch (e) {}
   }
 
+  const handleDelete = async (jobId) => {
+    if (!window.confirm('Delete this job and all its data?')) return
+    try {
+      const res = await fetch(`${API}/api/jobs/${jobId}/delete`, { method: 'POST' })
+      const data = await res.json()
+      if (data.ok) {
+        if (activeJob === jobId) {
+          setActiveJob(null)
+          setJobData(null)
+        }
+        fetchJobs()
+      } else {
+        alert(data.error || 'Failed to delete')
+      }
+    } catch (e) {
+      alert('Failed to delete job')
+    }
+  }
+
   const handleResume = async (jobId) => {
     try {
       const res = await fetch(`${API}/api/jobs/${jobId}/resume`, {
@@ -608,6 +627,14 @@ export default function App() {
                   )}
                   {job.status === 'running' && (
                     <button style={{ ...css.btnSecondary, fontSize: 10 }} onClick={() => setActiveJob(job.id)}>view</button>
+                  )}
+                  {job.status !== 'running' && job.status !== 'queued' && (
+                    <button
+                      style={{ ...css.btnSecondary, fontSize: 10, color: 'var(--error)', borderColor: 'rgba(255,68,85,0.4)' }}
+                      onClick={() => handleDelete(job.id)}
+                    >
+                      ✕
+                    </button>
                   )}
                 </div>
               </div>
