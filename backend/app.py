@@ -905,14 +905,55 @@ def download(job_id, fmt):
             return jsonify({"error": "Invalid format"}), 400
 
         mimetype = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        return send_file(tmp.name, mimetype=mimetype,
-                         as_attachment=True, download_name=filename)
+        response = send_file(tmp.name, mimetype=mimetype,
+                             as_attachment=True, download_name=filename)
+        # Clean up temp file after response is sent
+        @response.call_on_close
+        def _cleanup():
+            try:
+                os.unlink(tmp.name)
+            except Exception:
+                pass
+        return response
     except Exception as e:
         try:
             os.unlink(tmp.name)
         except Exception:
             pass
         raise e
+
+
+@app.route("/api/jobs/<job_id>/delete", methods=["POST"])
+def delete_job(job_id):
+    import shutil
+    job = load_job(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    if job["status"] in ("running", "queued"):
+        return jsonify({"error": "Cannot delete a running job — stop it first"}), 400
+
+    # Delete job JSON
+    try:
+        _job_path(job_id).unlink(missing_ok=True)
+    except Exception:
+        pass
+
+    # Delete results folder
+    results_dir = JOBS_DIR / f"{job_id}_results"
+    try:
+        if results_dir.exists():
+            shutil.rmtree(str(results_dir))
+    except Exception:
+        pass
+
+    # Clean up any orphaned temp xlsx files for this job
+    for tmp_file in JOBS_DIR.glob("*.xlsx"):
+        try:
+            tmp_file.unlink()
+        except Exception:
+            pass
+
+    return jsonify({"ok": True})
 
 
 @app.route("/api/jobs")
