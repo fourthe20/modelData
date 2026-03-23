@@ -592,7 +592,6 @@ export default function App() {
                   </div>
                   <div style={{ color: 'var(--text-muted)', fontFamily: 'var(--mono)', fontSize: 10 }}>
                     {job.name ? `${job.platform} · ` : ''}{job.done}/{job.total} models
-                    {job.resumed_from && <span style={{ marginLeft: 6, color: 'var(--warn)' }}>↩ resumed</span>}
                   </div>
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
