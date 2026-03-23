@@ -378,12 +378,13 @@ _stop_flags: dict = {}
 
 def run_scrape_job(job_id, platform, usernames, delay):
     job = load_job(job_id)
+    already_done = job.get("done", 0)  # preserve count from resume
     job["status"] = "running"
-    job["total"] = len(usernames)
-    job["done"] = 0
-    job["log"] = []
-    # preserve usernames list for resume
-    job["all_usernames"] = usernames
+    # Don't reset total/done/log if resuming (done > 0 means we're continuing)
+    if already_done == 0:
+        job["log"] = []
+        job["all_usernames"] = usernames
+    job["total"] = job.get("total", len(usernames))  # keep original total
     save_job(job)
 
     stop_event = _stop_flags.setdefault(job_id, threading.Event())
@@ -428,7 +429,7 @@ def run_scrape_job(job_id, platform, usernames, delay):
                     save_job(job)
                     browser, page = make_page(pw)
 
-                job["log"].append(f"[{idx}/{len(usernames)}] Scraping {username}...")
+                job["log"].append(f"[{already_done + idx}/{job['total']}] Scraping {username}...")
                 data = scrape_user(page, platform, username)
 
                 # For Stripchat, also scrape social links from the profile page
@@ -442,7 +443,7 @@ def run_scrape_job(job_id, platform, usernames, delay):
                     job["log"][-1] += f" {data.get('status', '?')}"
 
                 append_result(job_id, username, data)
-                job["done"] = idx
+                job["done"] = already_done + idx
                 save_job(job)
 
                 if idx < len(usernames):
@@ -810,52 +811,37 @@ def stop_job(job_id):
 
 @app.route("/api/jobs/<job_id>/resume", methods=["POST"])
 def resume_job(job_id):
-    old_job = load_job(job_id)
-    if not old_job:
+    job = load_job(job_id)
+    if not job:
         return jsonify({"error": "Job not found"}), 404
-    if old_job["status"] not in ("error", "stopped"):
+    if job["status"] not in ("error", "stopped"):
         return jsonify({"error": "Only errored or stopped jobs can be resumed"}), 400
 
     body = request.json or {}
     delay = float(body.get("delay", 3.0))
 
     completed = completed_usernames(job_id)
-    all_usernames = old_job.get("all_usernames", [])
+    all_usernames = job.get("all_usernames", [])
     remaining = [u for u in all_usernames if u not in completed]
 
     if not remaining:
         return jsonify({"error": "No remaining usernames to scrape"}), 400
 
-    new_job_id = str(uuid.uuid4())
-    new_job = {
-        "id": new_job_id,
-        "name": old_job.get("name", ""),
-        "platform": old_job["platform"],
-        "status": "queued",
-        "total": len(all_usernames),
-        "done": len(completed),
-        "log": [f"  ↩ resumed from job {job_id[:8]}... ({len(completed)} done, {len(remaining)} remaining)"],
-        "all_usernames": all_usernames,
-        "resumed_from": job_id,
-        "created_at": datetime.datetime.utcnow().isoformat(),
-    }
-    save_job(new_job)
-
-    # Symlink or copy old results dir so new job can access them
-    old_results = JOBS_DIR / f"{job_id}_results"
-    new_results = JOBS_DIR / f"{new_job_id}_results"
-    if old_results.exists():
-        import shutil
-        shutil.copytree(str(old_results), str(new_results))
+    # Resume in-place — same job ID, same results folder, just continue
+    job["status"] = "queued"
+    job["done"] = len(completed)
+    job["total"] = len(all_usernames)
+    job["log"].append(f"  ↩ resuming... ({len(completed)} done, {len(remaining)} remaining)")
+    save_job(job)
 
     thread = threading.Thread(
         target=run_scrape_job,
-        args=(new_job_id, old_job["platform"], remaining, delay),
+        args=(job_id, job["platform"], remaining, delay),
         daemon=True,
     )
     thread.start()
 
-    return jsonify({"job_id": new_job_id})
+    return jsonify({"job_id": job_id})
 
 
 @app.route("/api/jobs/<job_id>")
