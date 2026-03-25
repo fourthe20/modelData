@@ -1,6 +1,6 @@
 # statbate-scraper
 
-Private tool for scraping model earnings data from statbate.com.
+Tool for scraping model earnings data from statbate.com.
 
 ## Stack
 
